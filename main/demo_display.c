@@ -10,14 +10,14 @@ static lv_obj_t *s_swatch;
 static lv_obj_t *s_info;
 static lv_obj_t *s_mascot;
 static int s_color_idx;
-static int s_bl_idx;
+static int s_bl_idx;    // 亮度档位在进出页面间保持,不随 enter/exit 重置
 
 static const uint32_t COLORS[] = { 0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF, 0x000000 };
 static const char    *COLOR_NAME[] = { "RED", "GREEN", "BLUE", "WHITE", "BLACK" };
 #define COLOR_COUNT (sizeof(COLORS) / sizeof(COLORS[0]))
 
-static const uint8_t BL_LEVELS[] = { 100, 50, 10 };
-#define BL_COUNT (sizeof(BL_LEVELS) / sizeof(BL_LEVELS[0]))
+static const uint8_t BL_LEVELS[] = { 100, 90, 80, 70, 60, 50, 40, 30, 20, 10 };
+#define BL_COUNT ((int)(sizeof(BL_LEVELS) / sizeof(BL_LEVELS[0])))
 
 static void refresh(void) {
     lv_obj_set_style_bg_color(s_swatch, lv_color_hex(COLORS[s_color_idx]), 0);
@@ -30,7 +30,8 @@ static void refresh(void) {
 
 void demo_display_enter(void) {
     s_color_idx = 0;
-    s_bl_idx = 0;
+    // s_bl_idx 保持上次调节结果,仅做越界保护后直接应用
+    if (s_bl_idx < 0 || s_bl_idx >= BL_COUNT) s_bl_idx = 0;
     bsp_display_backlight(BL_LEVELS[s_bl_idx]);
 
     s_scr = ui_pixel_screen_create("DISPLAY");
@@ -45,7 +46,7 @@ void demo_display_enter(void) {
 }
 
 void demo_display_exit(void) {
-    bsp_display_backlight(100);          // 退出时恢复全亮,免得菜单看不见
+    // 亮度保持用户调节结果,不恢复 100%,主菜单及其他页面沿用当前背光
     if (s_scr) { lv_obj_delete(s_scr); s_scr = NULL; s_swatch = s_info = s_mascot = NULL; }
 }
 
