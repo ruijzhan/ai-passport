@@ -150,7 +150,7 @@ static void sleep_task(void *arg)
                     failure = "Audio resume";
                 }
             }
-            bsp_display_backlight(100);
+            bsp_display_backlight(demo_display_backlight_level());
 
             char text[128];
             if (err == ESP_OK) {
@@ -255,7 +255,7 @@ esp_err_t demo_low_power_stop(void)
     s_task = NULL;
     vSemaphoreDelete(s_stopped);
     s_stopped = NULL;
-    bsp_display_backlight(100);
+    bsp_display_backlight(demo_display_backlight_level());
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     return ESP_OK;
 }
@@ -263,7 +263,7 @@ esp_err_t demo_low_power_stop(void)
 void demo_low_power_exit(void)
 {
     s_busy = false;
-    bsp_display_backlight(100);
+    bsp_display_backlight(demo_display_backlight_level());
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     if (s_scr) {
         lv_obj_delete(s_scr);

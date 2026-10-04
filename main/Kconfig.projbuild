@@ -24,7 +24,7 @@ config APP_WIFI_AUTOCONNECT
         When enabled and APP_WIFI_SSID is non-empty, the device
         brings up Wi-Fi STA in the background at boot and keeps it
         connected across demo pages. Page exit does not tear it
-        down; idle shutdown still force-stops it before deep sleep.
+        down.
 
 endmenu
 

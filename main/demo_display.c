@@ -28,6 +28,11 @@ static void refresh(void) {
                           COLOR_NAME[s_color_idx], BL_LEVELS[s_bl_idx]);
 }
 
+uint8_t demo_display_backlight_level(void) {
+    if (s_bl_idx < 0 || s_bl_idx >= BL_COUNT) return 100;
+    return BL_LEVELS[s_bl_idx];
+}
+
 void demo_display_enter(void) {
     s_color_idx = 0;
     // s_bl_idx 保持上次调节结果,仅做越界保护后直接应用

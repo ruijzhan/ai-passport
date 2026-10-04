@@ -31,6 +31,7 @@ void lv_label_set_text(lv_obj_t *object, const char *text) {
     snprintf(test_status, sizeof(test_status), "%s", text);
 }
 void bsp_display_backlight(uint8_t percent) { (void)percent; }
+uint8_t demo_display_backlight_level(void) { return 100; }
 void ui_pixel_mascot_jump(lv_obj_t *mascot) { (void)mascot; }
 void ui_pixel_set_selected(lv_obj_t *panel, bool selected, bool enabled) {
     (void)panel; (void)selected; (void)enabled;

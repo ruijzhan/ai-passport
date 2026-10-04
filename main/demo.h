@@ -2,6 +2,8 @@
 // 新增演示页 = 实现 enter/exit/key，慢服务按需实现 start/stop，再注册到 DEMOS[]。
 #pragma once
 
+#include <stdint.h>
+
 #include "bsp_button.h"
 
 typedef struct {
@@ -16,6 +18,8 @@ typedef struct {
 // 各演示页(定义在各自的 .c 里)
 void demo_display_enter(void); void demo_display_exit(void);
 void demo_display_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+// 当前用户亮度(0-100),进出页面保持;休眠唤醒恢复用它,不用硬编码 100%。
+uint8_t demo_display_backlight_level(void);
 
 void demo_button_enter(void);  void demo_button_exit(void);
 void demo_button_key(bsp_btn_t btn, bsp_btn_ev_t ev);

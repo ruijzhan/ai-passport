@@ -155,8 +155,37 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertLess(body.index("bsp_lvgl_lock(1000)"),
                         body.index("bsp_display_prepare_deep_sleep()"))
 
-    def test_idle_shutdown_uses_terminal_order_without_timer_wake(self) -> None:
-        body = function_body(self.main, "idle_shutdown")
+    def test_backlight_restore_uses_user_level(self) -> None:
+        demo_body = function_body(self.demo, "sleep_task")
+        self.assertIn("demo_display_backlight_level()", demo_body)
+        self.assertNotIn("bsp_display_backlight(100)", demo_body)
+
+    def test_idle_screen_off_backlight_and_wake_consume_key(self) -> None:
+        idle_task_body = function_body(self.main, "idle_task")
+        self.assertIn("bsp_display_backlight(0)", idle_task_body)
+        self.assertIn("idle_poll(", idle_task_body)
+        self.assertIn("idle_light_sleep()", idle_task_body)
+        self.assertIn("idle_deep_sleep()", idle_task_body)
+        track_body = function_body(self.main, "idle_track_input")
+        self.assertIn("idle_notify_activity(", track_body)
+        self.assertIn("demo_display_backlight_level()", track_body)
+        self.assertNotIn("bsp_display_backlight(100)", track_body)
+        process_body = function_body(self.main, "process_input")
+        self.assertLess(process_body.index("idle_track_input()"),
+                        process_body.index("navigation_input("))
+
+    def test_idle_auto_light_sleep_suspends_and_resumes(self) -> None:
+        body = function_body(self.main, "idle_light_sleep")
+        self.assertIn("esp_sleep_enable_timer_wakeup(IDLE_LIGHT_SLEEP_US)", body)
+        self.assertIn("bsp_audio_sleep()", body)
+        self.assertIn("esp_light_sleep_start()", body)
+        self.assertIn("esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER)", body)
+        self.assertIn("bsp_audio_wake()", body)
+        self.assertIn("bsp_display_backlight(0)", body)
+        self.assertIn("demo_display_backlight_level()", body)
+
+    def test_idle_auto_deep_sleep_uses_terminal_order_with_timer_wake(self) -> None:
+        body = function_body(self.main, "idle_deep_sleep")
         calls = [
             "bsp_battery_sleep()",
             "bsp_audio_sleep()",
@@ -169,19 +198,8 @@ class DeepSleepContractTest(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertLess(body.index("bsp_lvgl_lock(1000)"),
                         body.index("bsp_display_prepare_deep_sleep()"))
-        self.assertIn("esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER)", body)
-        self.assertNotIn("esp_sleep_enable_timer_wakeup", body)
-
-    def test_idle_screen_off_backlight_and_wake_consume_key(self) -> None:
-        idle_task_body = function_body(self.main, "idle_task")
-        self.assertIn("bsp_display_backlight(0)", idle_task_body)
-        self.assertIn("idle_poll(", idle_task_body)
-        track_body = function_body(self.main, "idle_track_input")
-        self.assertIn("idle_notify_activity(", track_body)
-        self.assertIn("bsp_display_backlight(100)", track_body)
-        process_body = function_body(self.main, "process_input")
-        self.assertLess(process_body.index("idle_track_input()"),
-                        process_body.index("navigation_input("))
+        self.assertIn("esp_sleep_enable_timer_wakeup(IDLE_DEEP_SLEEP_US)", body)
+        self.assertNotIn("esp_sleep_disable_wakeup_source", body)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -25,6 +26,15 @@
 #include "freertos/task.h"
 
 static const char *TAG = "main";
+
+#define IDLE_LIGHT_SLEEP_US (2ULL * 1000ULL * 1000ULL)
+#define IDLE_DEEP_SLEEP_US (5ULL * 1000ULL * 1000ULL)
+
+// Idle deep-sleep reboot must stay dark: timer wake reboots the chip and
+// app_main() would otherwise light the screen at the default (brightest)
+// level ~10 min after the user left the device alone.
+#define IDLE_DEEP_MAGIC 0x49444C44UL
+static RTC_DATA_ATTR uint32_t s_idle_deep_magic;
 
 static const demo_entry_t DEMOS[] = {
     { .name = "Display", .enter = demo_display_enter, .exit = demo_display_exit,
@@ -113,35 +123,72 @@ static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
 
 static void idle_log_warn(const char *step, esp_err_t error) {
     if (error != ESP_OK) {
-        ESP_LOGW(TAG, "idle shutdown continue: %s failed: %s",
+        ESP_LOGW(TAG, "idle sleep continue: %s failed: %s",
                  step, esp_err_to_name(error));
     }
 }
 
-// Terminal software shutdown: same peripheral order as the Low Power demo
-// deep-sleep path, but without enabling the RTC timer so the device stays
-// off until the power key / reset restarts it.
-static void idle_shutdown(void) {
-    ESP_LOGI(TAG, "10 min idle: software shutdown, restart with power key");
+// Automatic light sleep: same audio suspend/resume as the Low Power demo,
+// but with the backlight kept off (this stage only fires after screen-off).
+// Timer wake only; a key pressed inside the 2 s window may be missed.
+static void idle_light_sleep(void) {
+    ESP_LOGI(TAG, "5 min idle: light sleep 2 s (timer wake)");
+    esp_err_t err = esp_sleep_enable_timer_wakeup(IDLE_LIGHT_SLEEP_US);
+    bool audio_attempted = false;
+    if (err == ESP_OK) {
+        audio_attempted = true;
+        err = bsp_audio_sleep();
+    }
+    if (err == ESP_OK) bsp_display_backlight(0);
+    if (err == ESP_OK) err = esp_light_sleep_start();
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    if (audio_attempted) {
+        esp_err_t wake_err = bsp_audio_wake();
+        if (err == ESP_OK && wake_err != ESP_OK) err = wake_err;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "idle light sleep failed: %s", esp_err_to_name(err));
+    }
+    if (s_idle_mutex && xSemaphoreTake(s_idle_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        bool off = s_idle.screen_off;
+        xSemaphoreGive(s_idle_mutex);
+        bsp_display_backlight(off ? 0 : demo_display_backlight_level());
+    } else {
+        bsp_display_backlight(0);
+    }
+}
+
+// Automatic deep sleep: same terminal peripheral order as the Low Power demo
+// deep-sleep path, but armed with an RTC timer so the device wakes (reboots)
+// after 5 s instead of staying off. Timer wake is mandatory here: without it
+// the device would sleep with no wake source.
+static void idle_deep_sleep(void) {
+    ESP_LOGI(TAG, "10 min idle: deep sleep 5 s (timer wake, will restart)");
     if (s_navigation.active >= 0 && (size_t)s_navigation.active < DEMO_COUNT) {
         const demo_entry_t *demo = &DEMOS[(size_t)s_navigation.active];
         esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
         if (e != ESP_OK) {
-            ESP_LOGW(TAG, "idle shutdown continue: %s stop failed: %s",
+            ESP_LOGW(TAG, "idle sleep continue: %s stop failed: %s",
                      demo->name, esp_err_to_name(e));
         }
     }
     demo_wifi_boot_stop();
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    esp_err_t err = esp_sleep_enable_timer_wakeup(IDLE_DEEP_SLEEP_US);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "idle deep sleep aborted, timer wake failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
     idle_log_warn("CW2017 suspend", bsp_battery_sleep());
     idle_log_warn("ES8311 suspend", bsp_audio_sleep());
     idle_log_warn("I2S pin release", bsp_audio_prepare_deep_sleep());
     idle_log_warn("shared I2C pin release", bsp_i2c_prepare_deep_sleep());
     if (!bsp_lvgl_lock(1000)) {
-        ESP_LOGE(TAG, "idle shutdown: cannot stop LVGL flush, restarting");
+        ESP_LOGE(TAG, "idle deep sleep: cannot stop LVGL flush, restarting");
         esp_restart();
     }
     idle_log_warn("ST7789 suspend", bsp_display_prepare_deep_sleep());
+    s_idle_deep_magic = IDLE_DEEP_MAGIC;
     esp_deep_sleep_start();
     ESP_LOGE(TAG, "esp_deep_sleep_start returned unexpectedly, restarting");
     esp_restart();
@@ -158,24 +205,24 @@ static void idle_task(void *arg) {
         if (action == IDLE_ACTION_SCREEN_OFF) {
             bsp_display_backlight(0);
             ESP_LOGI(TAG, "60 s idle: screen off, press any key to wake");
-        } else if (action == IDLE_ACTION_SHUTDOWN) {
-            idle_shutdown();
+        } else if (action == IDLE_ACTION_LIGHT_SLEEP) {
+            idle_light_sleep();
+        } else if (action == IDLE_ACTION_DEEP_SLEEP) {
+            idle_deep_sleep();
         }
     }
 }
 
-// Every key event refreshes the idle timers. The first key after screen-off
+// Every key event refreshes the idle timer. The first key after screen-off
 // only wakes the backlight so it cannot trigger an unintended menu action.
 static bool idle_track_input(void) {
     if (!s_idle_mutex) return false;
     if (xSemaphoreTake(s_idle_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
     bool was_off = s_idle.screen_off;
-    bool done = s_idle.shutdown_done;
     idle_notify_activity(&s_idle, esp_timer_get_time() / 1000);
     xSemaphoreGive(s_idle_mutex);
-    if (done) return true;
     if (was_off) {
-        bsp_display_backlight(100);
+        bsp_display_backlight(demo_display_backlight_level());
         ESP_LOGI(TAG, "key wake from idle screen-off");
         return true;
     }
@@ -278,6 +325,15 @@ void app_main(void) {
     if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
         ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
     }
+    // Idle auto deep-sleep uses a 5 s timer + reboot (no key wake circuit).
+    // Without this flag the reboot lights the screen brightest ~10 min after
+    // idle, even though nobody touched the device.
+    bool idle_deep_wake =
+        (wakeup == ESP_SLEEP_WAKEUP_TIMER && s_idle_deep_magic == IDLE_DEEP_MAGIC);
+    if (idle_deep_wake) {
+        s_idle_deep_magic = 0;
+        ESP_LOGI(TAG, "idle deep-sleep timer wake: staying dark until key");
+    }
 
     bsp_i2c_init();
     bsp_i2c_scan();
@@ -290,22 +346,28 @@ void app_main(void) {
                  BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
         return;
     }
-    bsp_display_backlight(100);
+    bsp_display_backlight(idle_deep_wake ? 0 : demo_display_backlight_level());
 
     demo_navigation_init(&s_navigation, DEMO_COUNT);
 
     s_idle_mutex = xSemaphoreCreateMutex();
     if (s_idle_mutex) {
-        idle_init(&s_idle, IDLE_SCREEN_OFF_MS, IDLE_SHUTDOWN_MS,
-                  esp_timer_get_time() / 1000);
+        idle_init(&s_idle, IDLE_SCREEN_OFF_MS, IDLE_LIGHT_SLEEP_MS,
+                  IDLE_DEEP_SLEEP_MS, esp_timer_get_time() / 1000);
+        if (idle_deep_wake) {
+            // Timers restart from now, but the screen stays off: the next key
+            // only restores the backlight (see idle_track_input) instead of
+            // acting on the menu.
+            s_idle.screen_off = true;
+        }
         if (xTaskCreate(idle_task, "idle_sleep", 4096, NULL, 3, &s_idle_task) != pdPASS) {
             vSemaphoreDelete(s_idle_mutex);
             s_idle_mutex = NULL;
             s_idle_task = NULL;
-            ESP_LOGW(TAG, "idle sleep task creation failed, continuing without auto screen-off/shutdown");
+            ESP_LOGW(TAG, "idle sleep task creation failed, continuing without auto screen-off/sleep");
         }
     } else {
-        ESP_LOGW(TAG, "idle sleep mutex creation failed, continuing without auto screen-off/shutdown");
+        ESP_LOGW(TAG, "idle sleep mutex creation failed, continuing without auto screen-off/sleep");
     }
 
     // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
