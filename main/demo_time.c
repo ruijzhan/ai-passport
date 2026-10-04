@@ -146,9 +146,11 @@ void demo_time_enter(void)
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 40, 284, 160, UI_PAPER);
 
     s_time = lv_label_create(panel);
-    lv_obj_set_style_text_font(s_time, &lv_font_montserrat_20, 0);
+    lv_obj_set_width(s_time, 258);
+    lv_obj_set_style_text_font(s_time, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(s_time, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_time, LV_ALIGN_TOP_MID, 0, 2);
+    lv_obj_set_style_text_align(s_time, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_time, LV_ALIGN_TOP_MID, 0, 0);
     lv_label_set_text(s_time, "--:--:--");
 
     s_date = lv_label_create(panel);
@@ -156,21 +158,21 @@ void demo_time_enter(void)
     lv_obj_set_style_text_font(s_date, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_date, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_text_align(s_date, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(s_date, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_align(s_date, LV_ALIGN_TOP_MID, 0, 38);
     lv_label_set_text(s_date, "NOT SYNCED");
 
     s_status = lv_label_create(panel);
     lv_obj_set_width(s_status, 258);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 2, 56);
+    lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 2, 62);
     lv_label_set_text(s_status, "WiFi ...");
 
     s_ntp = lv_label_create(panel);
     lv_obj_set_width(s_ntp, 258);
     lv_obj_set_style_text_font(s_ntp, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_ntp, lv_color_hex(UI_SKY_DARK), 0);
-    lv_obj_align(s_ntp, LV_ALIGN_TOP_LEFT, 2, 100);
+    lv_obj_align(s_ntp, LV_ALIGN_TOP_LEFT, 2, 106);
     lv_label_set_text(s_ntp, "NTP ...");
 
     s_mascot = ui_pixel_mascot_create(s_scr, 272, 158);

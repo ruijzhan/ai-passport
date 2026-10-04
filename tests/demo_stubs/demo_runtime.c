@@ -21,6 +21,8 @@ struct test_ble_hs_cfg ble_hs_cfg;
 int test_nimble_deinit_result, test_nimble_stop_result, test_nimble_name_result;
 unsigned test_nimble_deinits, test_nimble_stops;
 const lv_font_t lv_font_montserrat_14 = { 0 };
+const lv_font_t lv_font_montserrat_20 = { 0 };
+const lv_font_t lv_font_montserrat_32 = { 0 };
 
 void test_log(const char *tag, const char *format, ...) { (void)tag; (void)format; }
 const char *esp_err_to_name(esp_err_t error) { (void)error; return "test error"; }
