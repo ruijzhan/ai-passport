@@ -9,6 +9,7 @@ typedef int esp_err_t;
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_NO_MEM 0x101
+#define ESP_ERR_INVALID_ARG 0x102
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_ERR_TIMEOUT 0x107
 const char *esp_err_to_name(esp_err_t error);
@@ -109,13 +110,29 @@ typedef struct { int unused; } esp_netif_config_t;
 #define ESP_NETIF_DEFAULT_WIFI_STA() { 0 }
 typedef const char *esp_event_base_t;
 typedef void *esp_event_handler_instance_t;
-#define WIFI_EVENT "wifi"
+extern esp_event_base_t WIFI_EVENT;
+extern esp_event_base_t IP_EVENT;
 #define WIFI_EVENT_SCAN_DONE 1
+#define WIFI_EVENT_STA_START 2
+#define WIFI_EVENT_STA_DISCONNECTED 3
+#define ESP_EVENT_ANY_ID -1
+#define IP_EVENT_STA_GOT_IP 4
+#define WIFI_IF_STA 0
 #define WIFI_STORAGE_RAM 0
 #define WIFI_MODE_STA 0
 typedef struct { int unused; } wifi_init_config_t;
 #define WIFI_INIT_CONFIG_DEFAULT() { 0 }
+typedef struct { struct { uint8_t ssid[32]; uint8_t password[64]; } sta; } wifi_config_t;
 typedef struct { int rssi; uint8_t ssid[33]; uint8_t primary; } wifi_ap_record_t;
+typedef struct { uint32_t addr; } esp_ip4_addr_t;
+typedef struct { esp_ip4_addr_t ip; esp_ip4_addr_t netmask; esp_ip4_addr_t gw; } esp_netif_ip_info_t;
+typedef struct { esp_netif_ip_info_t ip_info; } ip_event_got_ip_t;
+#define ESP_NETIF_DNS_MAIN 0
+#define ESP_IPADDR_TYPE_V4 0
+typedef struct { int type; union { esp_ip4_addr_t ip4; uint8_t pad[16]; } u_addr; } esp_ip_addr_t;
+typedef struct { esp_ip_addr_t ip; } esp_netif_dns_info_t;
+void esp_ip4addr_ntoa(const esp_ip4_addr_t *addr, char *buf, int buflen);
+esp_err_t esp_netif_get_dns_info(esp_netif_t *netif, int type, esp_netif_dns_info_t *dns);
 esp_netif_t *esp_netif_new(const esp_netif_config_t *cfg);
 esp_err_t esp_netif_attach_wifi_station(esp_netif_t *netif);
 esp_err_t esp_wifi_set_default_wifi_sta_handlers(void);
@@ -124,6 +141,9 @@ esp_err_t esp_wifi_init(const wifi_init_config_t *cfg);
 esp_err_t esp_wifi_deinit(void);
 esp_err_t esp_wifi_set_storage(int storage);
 esp_err_t esp_wifi_set_mode(int mode);
+esp_err_t esp_wifi_set_config(int ifx, const wifi_config_t *cfg);
+esp_err_t esp_wifi_connect(void);
+esp_err_t esp_wifi_disconnect(void);
 esp_err_t esp_wifi_start(void);
 esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_scan_start(const void *cfg, bool blocking);

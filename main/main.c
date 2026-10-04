@@ -129,6 +129,7 @@ static void idle_shutdown(void) {
                      demo->name, esp_err_to_name(e));
         }
     }
+    demo_wifi_boot_stop();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     idle_log_warn("CW2017 suspend", bsp_battery_sleep());
     idle_log_warn("ES8311 suspend", bsp_audio_sleep());
@@ -323,6 +324,15 @@ void app_main(void) {
     s_ok[4] = true;                                    // 页面内按需初始化并显示错误
     s_ok[5] = true;
     s_ok[6] = true;
+
+    // Kconfig Wi-Fi 开机自连(SSID 为空或关闭时跳过,不阻塞菜单)。
+    esp_err_t wifi_boot_err = demo_wifi_boot_autoconnect();
+    if (wifi_boot_err == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi boot autoconnect started");
+    } else {
+        ESP_LOGI(TAG, "Wi-Fi boot autoconnect skipped: %s",
+                 esp_err_to_name(wifi_boot_err));
+    }
 
     if (bsp_lvgl_lock(1000)) {
         enter_menu();

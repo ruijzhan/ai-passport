@@ -141,6 +141,10 @@ void vSemaphoreDelete(SemaphoreHandle_t sem) {
 
 esp_err_t demo_radio_nvs_prepare(void) { return ESP_OK; }
 esp_err_t demo_radio_network_prepare(void) { return ESP_OK; }
+static char test_wifi_event_base[] = "wifi";
+static char test_ip_event_base[] = "ip";
+esp_event_base_t WIFI_EVENT = test_wifi_event_base;
+esp_event_base_t IP_EVENT = test_ip_event_base;
 esp_err_t nimble_port_init(void) { return ESP_OK; }
 esp_err_t nimble_port_deinit(void) {
     test_nimble_deinits++;

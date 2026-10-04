@@ -1,0 +1,29 @@
+menu "FoloToy AI Passport Wi-Fi"
+
+config APP_WIFI_SSID
+    string "Wi-Fi SSID (empty disables auto-connect)"
+    default ""
+    help
+        Station SSID used by the Wi-Fi demo and optional boot
+        auto-connect. Leave empty to keep the pure scan-only
+        behavior without joining any network.
+
+config APP_WIFI_PASSWORD
+    string "Wi-Fi password (local only, never commit)"
+    default ""
+    help
+        Station password for APP_WIFI_SSID. Configure it locally
+        with "idf.py menuconfig" (stored in the ignored sdkconfig),
+        never in sdkconfig.defaults or any committed file, and never
+        print it in logs.
+
+config APP_WIFI_AUTOCONNECT
+    bool "Connect at boot when SSID is set"
+    default y
+    help
+        When enabled and APP_WIFI_SSID is non-empty, the device
+        brings up Wi-Fi STA in the background at boot and keeps it
+        connected across demo pages. Page exit does not tear it
+        down; idle shutdown still force-stops it before deep sleep.
+
+endmenu

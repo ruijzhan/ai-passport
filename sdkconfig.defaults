@@ -42,3 +42,8 @@ CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
 CONFIG_BT_NIMBLE_NVS_PERSIST=n
+
+# --- Wi-Fi STA 凭证(本地配置,不提交) ---
+# SSID/密码通过 main/Kconfig.projbuild 定义(APP_WIFI_*),默认值均为空(纯扫描)。
+# 需要联网时在本地运行 idf.py menuconfig 填写,保存在被忽略的 sdkconfig 中,
+# 切勿写入本文件或任何已提交文件,日志中也不打印密码。
