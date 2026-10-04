@@ -41,6 +41,8 @@ static const demo_entry_t DEMOS[] = {
       .key = demo_ble_key, .start = demo_ble_start, .stop = demo_ble_stop },
     { .name = "Low Power", .enter = demo_low_power_enter, .exit = demo_low_power_exit,
       .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
+    { .name = "Time", .enter = demo_time_enter, .exit = demo_time_exit,
+      .key = demo_time_key, .start = demo_time_start, .stop = demo_time_stop },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 #define INPUT_QUEUE_DEPTH 8
@@ -324,6 +326,7 @@ void app_main(void) {
     s_ok[4] = true;                                    // 页面内按需初始化并显示错误
     s_ok[5] = true;
     s_ok[6] = true;
+    s_ok[7] = true;                                    // Time:离线也进页显示状态
 
     // Kconfig Wi-Fi 开机自连(SSID 为空或关闭时跳过,不阻塞菜单)。
     esp_err_t wifi_boot_err = demo_wifi_boot_autoconnect();
