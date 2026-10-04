@@ -175,9 +175,9 @@ static void sleep_task(void *arg)
 void demo_low_power_enter(void)
 {
     s_scr = ui_pixel_screen_create("LOW POWER");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 14, 54, 212, 190, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 50, 284, 140, UI_PAPER);
     s_status = lv_label_create(panel);
-    lv_obj_set_width(s_status, 184);
+    lv_obj_set_width(s_status, 256);
     lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 1);
@@ -195,8 +195,8 @@ void demo_low_power_enter(void)
         "DEEP SLEEP   |  5 SEC",
     };
     for (int i = 0; i < 2; i++) {
-        s_mode_cards[i] = ui_pixel_panel_create(panel, 7, 56 + i * 54,
-                                                 176, 42, UI_PAPER);
+        s_mode_cards[i] = ui_pixel_panel_create(panel, 8, 60 + i * 38,
+                                                 252, 32, UI_PAPER);
         lv_obj_t *label = lv_label_create(s_mode_cards[i]);
         lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(label, lv_color_hex(UI_INK), 0);
@@ -205,7 +205,7 @@ void demo_low_power_enter(void)
     }
     s_selected = 0;
     menu_refresh();
-    s_mascot = ui_pixel_mascot_create(s_scr, 101, 246);
+    s_mascot = ui_pixel_mascot_create(s_scr, 272, 158);
     s_busy = false;
     lv_screen_load(s_scr);
 }

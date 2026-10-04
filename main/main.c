@@ -30,7 +30,7 @@ static const demo_entry_t DEMOS[] = {
     { .name = "Audio", .enter = demo_audio_enter, .exit = demo_audio_exit,
       .key = demo_audio_key, .start = demo_audio_start, .stop = demo_audio_stop },
     { .name = "Battery", .enter = demo_battery_enter, .exit = demo_battery_exit,
-      .key = demo_battery_key },
+      .key = demo_battery_key, .start = demo_battery_start, .stop = demo_battery_stop },
     { .name = "Wi-Fi", .enter = demo_wifi_enter, .exit = demo_wifi_exit,
       .key = demo_wifi_key, .start = demo_wifi_start, .stop = demo_wifi_stop },
     { .name = "BLE", .enter = demo_ble_enter, .exit = demo_ble_exit,
@@ -72,17 +72,18 @@ static void menu_refresh(void) {
 static void menu_build(void) {
     s_menu_scr = ui_pixel_screen_create("FoloToy");
 
+    // 横屏 320x240:3 列 x 3 行,卡片 94x36。
     for (size_t i = 0; i < DEMO_COUNT; i++) {
-        int x = 11 + (int)(i % 2) * 112;
-        int y = 52 + (int)(i / 2) * 47;
-        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
+        int x = 11 + (int)(i % 3) * 104;
+        int y = 52 + (int)(i / 3) * 46;
+        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 94, 36, UI_PAPER);
         s_rows[i] = lv_label_create(s_cards[i]);
         lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_center(s_rows[i]);
     }
 
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
+    s_mascot = ui_pixel_mascot_create(s_menu_scr, 272, 158);
 
     menu_refresh();
     lv_screen_load(s_menu_scr);

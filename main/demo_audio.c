@@ -129,9 +129,9 @@ static void audio_task(void *arg) {
 
 void demo_audio_enter(void) {
     s_scr = ui_pixel_screen_create("AUDIO");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 62, 204, 168, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 50, 284, 140, UI_PAPER);
 
-    lv_obj_t *record = ui_pixel_panel_create(panel, 58, 12, 72, 72, UI_INK);
+    lv_obj_t *record = ui_pixel_panel_create(panel, 106, 8, 72, 64, UI_INK);
     lv_obj_t *disc = lv_obj_create(record);
     lv_obj_set_size(disc, 36, 36);
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
@@ -143,11 +143,11 @@ void demo_audio_enter(void) {
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s_status, 176);
+    lv_obj_set_width(s_status, 256);
     lv_label_set_text(s_status, "OK: 1kHz TONE\nUP: RECORD + PLAY");
     lv_obj_align(s_status, LV_ALIGN_BOTTOM_MID, 0, -9);
 
-    s_mascot = ui_pixel_mascot_create(s_scr, 101, 238);
+    s_mascot = ui_pixel_mascot_create(s_scr, 272, 158);
 
     lv_screen_load(s_scr);
 }

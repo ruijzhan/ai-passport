@@ -1,5 +1,6 @@
 // components/bsp/include/bsp_display.h
 // ST7789P3 240x320 显示:SPI 面板初始化 + 厂商专属寄存器 + LEDC 背光调光。
+// 物理屏竖屏 240x320,逻辑横屏 320x240(顺时针 90°,见 bsp_display_lvgl.c rotation)。
 #pragma once
 
 #include "esp_err.h"

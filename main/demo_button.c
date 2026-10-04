@@ -11,7 +11,7 @@
 static lv_obj_t   *s_scr, *s_mv, *s_log;
 static lv_timer_t *s_timer;
 
-#define LOG_LINES 6
+#define LOG_LINES 4   // 面板高 140,日志区约 85px;montserrat_14 行高约 17px,4 行≈68px 刚好放下
 static char s_lines[LOG_LINES][32];
 static int  s_line_cnt;
 
@@ -45,20 +45,24 @@ static void log_push(const char *text) {
 void demo_button_enter(void) {
     s_line_cnt = 0;
     s_scr = ui_pixel_screen_create("BUTTON / ADC");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 58, 204, 184, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 50, 284, 140, UI_PAPER);
 
     s_mv = lv_label_create(panel);
     lv_obj_set_style_text_font(s_mv, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_mv, lv_color_hex(UI_SKY_DARK), 0);
-    lv_obj_align(s_mv, LV_ALIGN_TOP_MID, 0, 8);
+    lv_obj_align(s_mv, LV_ALIGN_TOP_MID, 0, 6);
     lv_label_set_text(s_mv, "-- mV");
 
     s_log = lv_label_create(panel);
+    lv_obj_set_style_text_font(s_log, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_log, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_log, LV_ALIGN_TOP_LEFT, 9, 54);
+    // 面板内容宽约 270px:锁死 260px + 自动换行,历史行再多也不会撑穿方框。
+    lv_obj_set_width(s_log, 260);
+    lv_label_set_long_mode(s_log, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_log, LV_ALIGN_TOP_LEFT, 9, 48);
     lv_label_set_text(s_log, "press any key...");
 
-    ui_pixel_mascot_create(s_scr, 101, 238);
+    ui_pixel_mascot_create(s_scr, 272, 158);
 
     s_timer = lv_timer_create(tick, 100, NULL);
     lv_screen_load(s_scr);

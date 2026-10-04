@@ -41,16 +41,19 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_style_pad_all(scr, 0, 0);
 
-    add_cloud(scr, 188, 8);
-    block(scr, 0, 286, 240, 34, UI_GRASS);
-    block(scr, 0, 286, 240, 4, 0xA7D93E);
-    for (int x = 0; x < 240; x += 30) {
-        block(scr, x, 312, 18, 8, UI_GRASS_DARK);
-        block(scr, x + 18, 316, 12, 4, 0x75452E);
+    // 横屏 320x240 背景:云靠右,草地贴底,标题牌保持左上。
+    add_cloud(scr, 268, 8);
+    block(scr, 0, 206, 320, 34, UI_GRASS);
+    block(scr, 0, 206, 320, 4, 0xA7D93E);
+    for (int x = 0; x < 320; x += 30) {
+        block(scr, x, 232, 18, 8, UI_GRASS_DARK);
+        block(scr, x + 18, 236, 12, 4, 0x75452E);
     }
 
-    block(scr, 9, 12, 151, 33, UI_INK);
+    lv_obj_t *plate_shadow = block(scr, 9, 12, 151, 33, UI_INK);
+    lv_obj_set_style_radius(plate_shadow, UI_PANEL_RADIUS, 0);
     lv_obj_t *plate = block(scr, 5, 8, 151, 33, UI_PAPER);
+    lv_obj_set_style_radius(plate, UI_PANEL_RADIUS, 0);
     lv_obj_set_style_border_color(plate, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(plate, 3, 0);
     lv_obj_t *heading = ui_pixel_label(plate, title, &lv_font_montserrat_20, UI_INK);
@@ -61,8 +64,10 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
                                 uint32_t color)
 {
-    block(parent, x + 5, y + 6, w, h, UI_INK);
+    lv_obj_t *shadow = block(parent, x + 5, y + 6, w, h, UI_INK);
+    lv_obj_set_style_radius(shadow, UI_PANEL_RADIUS, 0);
     lv_obj_t *panel = block(parent, x, y, w, h, color);
+    lv_obj_set_style_radius(panel, UI_PANEL_RADIUS, 0);
     lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(panel, 4, 0);
     lv_obj_set_style_pad_all(panel, 7, 0);

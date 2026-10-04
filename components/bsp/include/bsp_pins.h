@@ -9,9 +9,11 @@
 
 // ============================================================================
 // 显示:ST7789P3 240x320,4-line SPI
+// 物理屏是竖屏 240x320,逻辑横屏 320x240(顺时针 90°):BSP_LCD_W/H 取逻辑尺寸,
+// 旋转由 bsp_display_lvgl.c 的 swap_xy/mirror 下发 MADCTL 实现。
 // ============================================================================
-#define BSP_LCD_W            240
-#define BSP_LCD_H            320
+#define BSP_LCD_W            320
+#define BSP_LCD_H            240
 #define BSP_LCD_SPI_HOST     SPI2_HOST
 #define BSP_LCD_MOSI         9
 #define BSP_LCD_SCLK         8

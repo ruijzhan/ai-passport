@@ -239,14 +239,14 @@ static void tick(lv_timer_t *timer)
 void demo_ble_enter(void)
 {
     s_scr = ui_pixel_screen_create("BLUETOOTH LE");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 22, 58, 196, 180, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 50, 284, 140, UI_PAPER);
     s_status = lv_label_create(panel);
-    lv_obj_set_width(s_status, 168);
+    lv_obj_set_width(s_status, 256);
     lv_obj_set_style_text_align(s_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_INK), 0);
     lv_obj_center(s_status);
     lv_label_set_text(s_status, "Starting NimBLE...");
-    ui_pixel_mascot_create(s_scr, 101, 244);
+    ui_pixel_mascot_create(s_scr, 272, 158);
     s_timer = lv_timer_create(tick, 100, NULL);
     lv_screen_load(s_scr);
     s_state = BLE_DEMO_STARTING;

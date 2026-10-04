@@ -201,22 +201,22 @@ esp_err_t demo_wifi_stop(void)
 void demo_wifi_enter(void)
 {
     s_scr = ui_pixel_screen_create("WI-FI SCAN");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 54, 216, 190, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 18, 50, 284, 140, UI_PAPER);
 
     s_status = lv_label_create(panel);
-    lv_obj_set_width(s_status, 190);
+    lv_obj_set_width(s_status, 258);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 2, 2);
     lv_label_set_text(s_status, "Starting Wi-Fi...");
 
     s_results = lv_label_create(panel);
-    lv_obj_set_width(s_results, 190);
+    lv_obj_set_width(s_results, 258);
     lv_obj_set_style_text_font(s_results, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_results, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_results, LV_ALIGN_TOP_LEFT, 2, 35);
     lv_label_set_text(s_results, "RSSI  SSID  CHANNEL");
 
-    ui_pixel_mascot_create(s_scr, 101, 246);
+    ui_pixel_mascot_create(s_scr, 272, 158);
     s_timer = lv_timer_create(tick, 100, NULL);
     lv_screen_load(s_scr);
     s_state = WIFI_DEMO_STARTING;
