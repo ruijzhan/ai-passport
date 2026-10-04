@@ -12,12 +12,16 @@
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
 #include "demo_navigation.h"
+#include "idle_sleep.h"
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "main";
@@ -57,6 +61,9 @@ static demo_navigation_t s_navigation;
 static QueueHandle_t s_input_queue;
 static TaskHandle_t s_input_task;
 static volatile bool s_input_ready;
+static idle_state_t s_idle;
+static SemaphoreHandle_t s_idle_mutex;
+static TaskHandle_t s_idle_task;
 
 static void menu_refresh(void) {
     for (size_t i = 0; i < DEMO_COUNT; i++) {
@@ -102,7 +109,78 @@ static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
     return DEMO_NAV_INPUT_OTHER;
 }
 
+static void idle_log_warn(const char *step, esp_err_t error) {
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "idle shutdown continue: %s failed: %s",
+                 step, esp_err_to_name(error));
+    }
+}
+
+// Terminal software shutdown: same peripheral order as the Low Power demo
+// deep-sleep path, but without enabling the RTC timer so the device stays
+// off until the power key / reset restarts it.
+static void idle_shutdown(void) {
+    ESP_LOGI(TAG, "10 min idle: software shutdown, restart with power key");
+    if (s_navigation.active >= 0 && (size_t)s_navigation.active < DEMO_COUNT) {
+        const demo_entry_t *demo = &DEMOS[(size_t)s_navigation.active];
+        esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "idle shutdown continue: %s stop failed: %s",
+                     demo->name, esp_err_to_name(e));
+        }
+    }
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    idle_log_warn("CW2017 suspend", bsp_battery_sleep());
+    idle_log_warn("ES8311 suspend", bsp_audio_sleep());
+    idle_log_warn("I2S pin release", bsp_audio_prepare_deep_sleep());
+    idle_log_warn("shared I2C pin release", bsp_i2c_prepare_deep_sleep());
+    if (!bsp_lvgl_lock(1000)) {
+        ESP_LOGE(TAG, "idle shutdown: cannot stop LVGL flush, restarting");
+        esp_restart();
+    }
+    idle_log_warn("ST7789 suspend", bsp_display_prepare_deep_sleep());
+    esp_deep_sleep_start();
+    ESP_LOGE(TAG, "esp_deep_sleep_start returned unexpectedly, restarting");
+    esp_restart();
+}
+
+static void idle_task(void *arg) {
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!s_idle_mutex) continue;
+        if (xSemaphoreTake(s_idle_mutex, portMAX_DELAY) != pdTRUE) continue;
+        idle_action_t action = idle_poll(&s_idle, esp_timer_get_time() / 1000);
+        xSemaphoreGive(s_idle_mutex);
+        if (action == IDLE_ACTION_SCREEN_OFF) {
+            bsp_display_backlight(0);
+            ESP_LOGI(TAG, "60 s idle: screen off, press any key to wake");
+        } else if (action == IDLE_ACTION_SHUTDOWN) {
+            idle_shutdown();
+        }
+    }
+}
+
+// Every key event refreshes the idle timers. The first key after screen-off
+// only wakes the backlight so it cannot trigger an unintended menu action.
+static bool idle_track_input(void) {
+    if (!s_idle_mutex) return false;
+    if (xSemaphoreTake(s_idle_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    bool was_off = s_idle.screen_off;
+    bool done = s_idle.shutdown_done;
+    idle_notify_activity(&s_idle, esp_timer_get_time() / 1000);
+    xSemaphoreGive(s_idle_mutex);
+    if (done) return true;
+    if (was_off) {
+        bsp_display_backlight(100);
+        ESP_LOGI(TAG, "key wake from idle screen-off");
+        return true;
+    }
+    return false;
+}
+
 static void process_input(const input_event_t *input) {
+    if (idle_track_input()) return;
     demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
 
     if (s_navigation.active >= 0) {
@@ -212,6 +290,20 @@ void app_main(void) {
     bsp_display_backlight(100);
 
     demo_navigation_init(&s_navigation, DEMO_COUNT);
+
+    s_idle_mutex = xSemaphoreCreateMutex();
+    if (s_idle_mutex) {
+        idle_init(&s_idle, IDLE_SCREEN_OFF_MS, IDLE_SHUTDOWN_MS,
+                  esp_timer_get_time() / 1000);
+        if (xTaskCreate(idle_task, "idle_sleep", 4096, NULL, 3, &s_idle_task) != pdPASS) {
+            vSemaphoreDelete(s_idle_mutex);
+            s_idle_mutex = NULL;
+            s_idle_task = NULL;
+            ESP_LOGW(TAG, "idle sleep task creation failed, continuing without auto screen-off/shutdown");
+        }
+    } else {
+        ESP_LOGW(TAG, "idle sleep mutex creation failed, continuing without auto screen-off/shutdown");
+    }
 
     // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
     s_ok[0] = true;                                   // Display 已确认可用

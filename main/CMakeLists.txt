@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS "main.c"
          "demo_navigation.c"
+         "idle_sleep.c"
          "ui_pixel.c"
          "ui_pixel_math.c"
          "demo_display.c"
