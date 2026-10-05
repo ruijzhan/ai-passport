@@ -29,6 +29,9 @@ static const char *TAG = "opencode_go";
 
 #define INPUT_QUEUE_DEPTH 8
 #define REFRESH_CMD 1
+// Seconds before retrying a failed usage fetch (success uses
+// CONFIG_APP_USAGE_REFRESH_S).
+#define REFRESH_RETRY_S 30
 
 typedef struct {
     bsp_btn_t btn;
@@ -49,24 +52,25 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     (void)xQueueSend(s_input_queue, &input, 0);
 }
 
-static void do_refresh(void)
+static bool do_refresh(void)
 {
     time_t now = time(NULL);
     if (CONFIG_APP_OPENCODE_API_KEY[0] == '\0') {
         usage_store_set_failed("API key not set", now);
-        return;
+        return false;
     }
     if (wifi_mgr_state() != WIFI_MGR_UP) {
         usage_store_set_failed("Waiting for WiFi", now);
-        return;
+        return false;
     }
     time_sync_start();
     usage_info_t info;
     if (usage_fetch(&info) == ESP_OK) {
         usage_store_set_ok(&info, time(NULL));
-    } else {
-        usage_store_set_failed("Fetch failed", time(NULL));
+        return true;
     }
+    usage_store_set_failed("Fetch failed", time(NULL));
+    return false;
 }
 
 // Worker: periodic refresh, on-demand refresh, and idle sleep.
@@ -74,6 +78,10 @@ static void worker_task(void *arg)
 {
     (void)arg;
     const int64_t interval_us = (int64_t)CONFIG_APP_USAGE_REFRESH_S * 1000000;
+    // A failed fetch (usually Wi-Fi not ready yet on early boot) retries
+    // soon so the first good snapshot — and the pre-sleep NVS cache that
+    // depends on it — is not delayed by a full refresh interval.
+    const int64_t retry_us = (int64_t)REFRESH_RETRY_S * 1000000;
     // Wake at least once a minute so the idle deadline is checked even
     // when the next refresh is far away.
     const TickType_t tick_cap = pdMS_TO_TICKS(60000);
@@ -91,11 +99,11 @@ static void worker_task(void *arg)
             power_idle_enter_deep_sleep();
         }
         if (got == pdTRUE && cmd == REFRESH_CMD) {
-            do_refresh();
-            next_refresh = esp_timer_get_time() + interval_us;
+            bool ok = do_refresh();
+            next_refresh = esp_timer_get_time() + (ok ? interval_us : retry_us);
         } else if (esp_timer_get_time() >= next_refresh) {
-            do_refresh();
-            next_refresh = esp_timer_get_time() + interval_us;
+            bool ok = do_refresh();
+            next_refresh = esp_timer_get_time() + (ok ? interval_us : retry_us);
         }
     }
 }
