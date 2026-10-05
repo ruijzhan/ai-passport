@@ -154,5 +154,48 @@ class DeepSleepContractTest(unittest.TestCase):
                         body.index("bsp_display_prepare_deep_sleep()"))
 
 
+class AppSleepContractTest(unittest.TestCase):
+    """Contracts for the OpenCode Go app shutdown path (main/power_idle.c).
+
+    A LONG press fires while the button is still held, and a second
+    bsp_lvgl_lock() after Wi-Fi stop timed out on-device (the LVGL task can
+    stay inside lv_timer_handler() during network teardown), rebooting via
+    esp_restart() instead of sleeping. These tests pin the fixes.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.idle = read("main/power_idle.c")
+
+    def test_release_is_awaited_before_teardown(self) -> None:
+        body = function_body(self.idle, "power_idle_enter_deep_sleep")
+        self.assertIn("wait_for_button_release()", body)
+        self.assertLess(body.index("wait_for_button_release()"),
+                        body.index("ui_home_destroy()"))
+
+    def test_display_work_uses_a_single_lvgl_lock(self) -> None:
+        body = function_body(self.idle, "power_idle_enter_deep_sleep")
+        self.assertEqual(body.count("bsp_lvgl_lock("), 1)
+        self.assertLess(body.index("bsp_lvgl_lock("),
+                        body.index("ui_home_destroy()"))
+        self.assertLess(body.index("ui_home_destroy()"),
+                        body.index("bsp_display_prepare_deep_sleep()"))
+        self.assertLess(body.index("bsp_display_prepare_deep_sleep()"),
+                        body.index("bsp_lvgl_unlock()"))
+
+    def test_lock_failure_never_reboots(self) -> None:
+        body = function_body(self.idle, "power_idle_enter_deep_sleep")
+        self.assertNotIn("cannot stop LVGL flush", body)
+
+    def test_button_pin_leaves_analog_mode_before_wakeup(self) -> None:
+        # The button ADC leaves GPIO0 with the digital input buffer
+        # disabled (constant LOW), which woke the chip instantly. The pin
+        # must be restored to digital input before arming wakeup.
+        body = function_body(self.idle, "power_idle_enter_deep_sleep")
+        self.assertIn("gpio_input_enable(GPIO_NUM_0)", body)
+        self.assertLess(body.index("gpio_input_enable(GPIO_NUM_0)"),
+                        body.index("esp_deep_sleep_enable_gpio_wakeup"))
+
+
 if __name__ == "__main__":
     unittest.main()
