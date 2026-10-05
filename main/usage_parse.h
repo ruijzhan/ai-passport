@@ -37,3 +37,21 @@ void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
 
 // Format an epoch as "YYYY-MM-DD HH:MM:SS" in UTC, "--" when negative.
 void usage_format_utc(int64_t epoch, char *buf, size_t len);
+
+// Fixed cycle lengths, in seconds.
+#define USAGE_ROLLING_PERIOD_S (5 * 3600)
+#define USAGE_WEEKLY_PERIOD_S (7 * 86400)
+
+// Days in the calendar month containing epoch_utc (UTC): 28..31.
+// Returns -1 when epoch_utc is negative.
+int usage_days_in_month(int64_t epoch_utc);
+
+// Monthly cycle length: days in the month containing now_utc, in seconds.
+// Returns -1 when now_utc is negative.
+int64_t usage_month_period_s(int64_t now_utc);
+
+// Time progress 0..100: elapsed / period, where
+// elapsed = period - (reset_utc - now_utc). 100 means the cycle has fully
+// elapsed, 0 means it just started. Returns -1 when the reset is unknown
+// (reset_utc < 0) or the period is invalid (period_s <= 0).
+int usage_time_progress(int64_t now_utc, int64_t reset_utc, int64_t period_s);

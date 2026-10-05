@@ -67,6 +67,31 @@ int main(void)
     usage_parse("{\"monthly\":{\"status\":\"ok\",\"percent\":42}}", &u);
     assert(u.monthly.valid && u.monthly.percent == 42 && !u.monthly.has_reset);
 
+    // Calendar month lengths (UTC).
+    assert(usage_days_in_month(usage_parse_time("2026-10-05T12:00:00Z")) == 31);
+    assert(usage_days_in_month(usage_parse_time("2026-09-01T00:00:00Z")) == 30);
+    assert(usage_days_in_month(usage_parse_time("2026-02-01T00:00:00Z")) == 28);
+    assert(usage_days_in_month(usage_parse_time("2024-02-15T00:00:00Z")) == 29);
+    assert(usage_days_in_month(-1) < 0);
+    assert(usage_month_period_s(usage_parse_time("2026-10-05T12:00:00Z")) ==
+           31 * 86400);
+    assert(usage_month_period_s(usage_parse_time("2026-09-01T00:00:00Z")) ==
+           30 * 86400);
+    assert(usage_month_period_s(-1) < 0);
+
+    // Time progress: elapsed / period.
+    assert(usage_time_progress(1000, 1000 + USAGE_ROLLING_PERIOD_S,
+                               USAGE_ROLLING_PERIOD_S) == 0);
+    assert(usage_time_progress(1000, 1000 + USAGE_ROLLING_PERIOD_S / 2,
+                               USAGE_ROLLING_PERIOD_S) == 50);
+    assert(usage_time_progress(1000, 1000, USAGE_ROLLING_PERIOD_S) == 100);
+    assert(usage_time_progress(1000, 500, USAGE_ROLLING_PERIOD_S) == 100);
+    assert(usage_time_progress(1000, 1000 + 2 * USAGE_ROLLING_PERIOD_S,
+                               USAGE_ROLLING_PERIOD_S) == 0);
+    assert(usage_time_progress(1000, -1, USAGE_ROLLING_PERIOD_S) < 0);
+    assert(usage_time_progress(1000, 2000, 0) < 0);
+    assert(usage_time_progress(1000, 2000, -5) < 0);
+
     puts("usage_parse tests: PASS");
     return 0;
 }

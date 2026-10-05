@@ -200,3 +200,47 @@ void usage_format_utc(int64_t epoch, char *buf, size_t len)
     snprintf(buf, len, "%04d-%02u-%02u %02u:%02u:%02u",
              y, mo, d, tod / 3600U, (tod % 3600U) / 60U, tod % 60U);
 }
+
+static unsigned month_days(int y, unsigned mo)
+{
+    static const unsigned char dim[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    if (mo < 1U || mo > 12U) return 0;
+    unsigned limit = dim[mo - 1U];
+    if (mo == 2U &&
+        ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) limit = 29;
+    return limit;
+}
+
+int usage_days_in_month(int64_t epoch_utc)
+{
+    if (epoch_utc < 0) return -1;
+    int64_t days = epoch_utc / 86400;
+    int y = 0;
+    unsigned mo = 0, d = 0;
+    civil_from_days(days, &y, &mo, &d);
+    unsigned limit = month_days(y, mo);
+    if (limit == 0) return -1;
+    return (int)limit;
+}
+
+int64_t usage_month_period_s(int64_t now_utc)
+{
+    int dim = usage_days_in_month(now_utc);
+    if (dim <= 0) return -1;
+    return (int64_t)dim * 86400;
+}
+
+int usage_time_progress(int64_t now_utc, int64_t reset_utc, int64_t period_s)
+{
+    if (reset_utc < 0 || period_s <= 0 || now_utc < 0) return -1;
+    int64_t remaining = reset_utc - now_utc;
+    if (remaining <= 0) return 100;
+    if (remaining >= period_s) return 0;
+    int64_t elapsed = period_s - remaining;
+    long pct = (long)((elapsed * 100 + period_s / 2) / period_s);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return (int)pct;
+}
