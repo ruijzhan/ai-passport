@@ -4,6 +4,7 @@ idf_component_register(
          "usage_store.c"
          "usage_client.c"
          "wifi_mgr.c"
+         "wifi_signal.c"
          "time_sync.c"
          "ui_home.c"
          "power_idle.c"

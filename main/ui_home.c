@@ -1,7 +1,7 @@
 // main/ui_home.c — see ui_home.h. Layout is 240x320 portrait:
 //
-//   14:22:05            WiFi -58dBm
-//   2026-10-06 Tue        BAT 87%
+//   14:22:05            [bars]
+//   2026-10-06 Tue   [icon] 87%
 //   ------------------------------
 //   5H ROLLING            4%
 //   [bar]
@@ -17,17 +17,49 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_log.h"
 #include "lvgl.h"
 #include "bsp_battery.h"
 #include "time_sync.h"
 #include "usage_store.h"
 #include "wifi_mgr.h"
+#include "wifi_signal.h"
+
+#define WIFI_BARS_COUNT 4
+// Right edge pulled 8px in from 232: the rounded-corner mask
+// (BSP_LVGL_SCREEN_RADIUS=30) clips the top-right bars at x>224.
+#define WIFI_BARS_RIGHT 224
+#define WIFI_BARS_BOTTOM 20
+#define WIFI_BAR_W 6
+#define WIFI_BAR_GAP 3
+
+// Battery group is right-aligned at x=232: [icon] 4px "87%".
+// Text width is measured at runtime so 8%..100% all hug the icon.
+#define BATT_GROUP_RIGHT 232
+#define BATT_ICON_TEXT_GAP 4
+#define BATT_FRAME_Y 32
+#define BATT_FRAME_W 25
+#define BATT_FRAME_H 13
+#define BATT_TIP_W 3
+#define BATT_TIP_H 6
+#define BATT_FILL_PAD 2
+#define BATT_FILL_MAX_W (BATT_FRAME_W - 2 * BATT_FILL_PAD)
+#define BATT_FILL_MAX_H (BATT_FRAME_H - 2 * BATT_FILL_PAD)
+#define BATT_LOW_SOC 30
+#define BATT_CRIT_SOC 15
+
+static const char *TAG = "ui_home";
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_clock;
-static lv_obj_t *s_wifi;
+static lv_obj_t *s_wifi_bars[WIFI_BARS_COUNT];
+static unsigned s_tick;
+static int s_last_wifi_key = 0x7FFFFFFF;
 static lv_obj_t *s_date;
 static lv_obj_t *s_batt;
+static lv_obj_t *s_batt_frame;
+static lv_obj_t *s_batt_fill;
+static lv_obj_t *s_batt_tip;
 static lv_obj_t *s_pct[3];
 static lv_obj_t *s_bar[3];
 static lv_obj_t *s_reset[3];
@@ -70,6 +102,65 @@ static void window_row(int i, const usage_window_t *w, int64_t now,
     set_text(s_reset[i], buf);
 }
 
+static void wifi_bars_set(int lit, bool weak)
+{
+    lv_color_t active = weak ? lv_palette_main(LV_PALETTE_RED) :
+                               lv_palette_main(LV_PALETTE_BLUE);
+    lv_color_t dim = lv_palette_lighten(LV_PALETTE_GREY, 2);
+    for (int i = 0; i < WIFI_BARS_COUNT; i++) {
+        if (!s_wifi_bars[i]) {
+            continue;
+        }
+        bool on = lit > 0 && i < lit;
+        lv_obj_set_style_bg_color(s_wifi_bars[i], on ? active : dim, 0);
+    }
+}
+
+static void batt_icon_set(int soc)
+{
+    if (!s_batt_frame || !s_batt_fill || !s_batt_tip) {
+        return;
+    }
+    lv_color_t fill;
+    int fill_w = 0;
+    if (soc < 0) {
+        fill = lv_palette_lighten(LV_PALETTE_GREY, 2);
+    } else {
+        if (soc < BATT_CRIT_SOC) {
+            fill = lv_palette_main(LV_PALETTE_RED);
+        } else if (soc < BATT_LOW_SOC) {
+            fill = lv_palette_main(LV_PALETTE_AMBER);
+        } else {
+            fill = lv_palette_main(LV_PALETTE_GREEN);
+        }
+        if (soc > 100) soc = 100;
+        if (soc < 0) soc = 0;
+        fill_w = (BATT_FILL_MAX_W * soc) / 100;
+    }
+    lv_obj_set_style_bg_color(s_batt_fill, fill, 0);
+    lv_obj_set_size(s_batt_fill, fill_w, BATT_FILL_MAX_H);
+}
+
+static void batt_layout(void)
+{
+    if (!s_batt || !s_batt_frame || !s_batt_fill || !s_batt_tip) {
+        return;
+    }
+    // Label auto-sizes to its text; measure it, then pin text right
+    // edge to the screen edge and park the icon just left of it.
+    lv_obj_update_layout(s_batt);
+    lv_coord_t text_w = lv_obj_get_width(s_batt);
+    lv_coord_t text_x = BATT_GROUP_RIGHT - text_w;
+    lv_obj_set_pos(s_batt, text_x, 30);
+    lv_coord_t frame_x = text_x - BATT_ICON_TEXT_GAP -
+        (BATT_FRAME_W + 2 + BATT_TIP_W);
+    lv_obj_set_pos(s_batt_frame, frame_x, BATT_FRAME_Y);
+    lv_obj_set_pos(s_batt_fill, frame_x + BATT_FILL_PAD,
+                   BATT_FRAME_Y + BATT_FILL_PAD);
+    lv_obj_set_pos(s_batt_tip, frame_x + BATT_FRAME_W + 2,
+                   BATT_FRAME_Y + (BATT_FRAME_H - BATT_TIP_H) / 2);
+}
+
 static void tick(lv_timer_t *timer)
 {
     (void)timer;
@@ -100,26 +191,53 @@ void ui_home_refresh(void)
     }
 
     char buf[96];
+    s_tick++;
+    // Top-right shows bars only (no "WiFi" text): lit count = signal
+    // level, red = weak, animated = connecting, all dim = off.
+    int lit = -1;
+    bool weak = false;
     switch (wifi_mgr_state()) {
     case WIFI_MGR_UP: {
         int rssi = wifi_mgr_rssi();
-        if (rssi != 0) snprintf(buf, sizeof(buf), "WiFi %ddBm", rssi);
-        else snprintf(buf, sizeof(buf), "WiFi on");
+        int level = wifi_signal_level(rssi);
+        if (level < 0) {
+            lit = -1;
+        } else {
+            if (level <= 1) {
+                weak = true;
+            }
+            lit = level;
+        }
+        int key = (WIFI_MGR_UP << 16) | (level + 1);
+        if (key != s_last_wifi_key) {
+            s_last_wifi_key = key;
+            ESP_LOGI(TAG, "wifi up rssi=%d level=%d", rssi, level);
+        }
         break;
     }
     case WIFI_MGR_CONNECTING:
-        snprintf(buf, sizeof(buf), "WiFi...");
+        lit = wifi_signal_anim_level(s_tick);
+        if (s_last_wifi_key != (int)WIFI_MGR_CONNECTING) {
+            s_last_wifi_key = (int)WIFI_MGR_CONNECTING;
+            ESP_LOGI(TAG, "wifi connecting");
+        }
         break;
     default:
-        snprintf(buf, sizeof(buf), "WiFi off");
+        lit = 0;
+        if (s_last_wifi_key != (int)WIFI_MGR_DOWN) {
+            s_last_wifi_key = (int)WIFI_MGR_DOWN;
+            ESP_LOGI(TAG, "wifi down");
+        }
         break;
     }
-    set_text(s_wifi, buf);
+    wifi_bars_set(lit, weak);
 
     int soc = bsp_battery_soc();
-    if (soc >= 0) snprintf(buf, sizeof(buf), "BAT %d%%", soc);
-    else snprintf(buf, sizeof(buf), "BAT --");
+    if (soc >= 0) snprintf(buf, sizeof(buf), "%d%%", soc);
+    else snprintf(buf, sizeof(buf), "--");
     set_text(s_batt, buf);
+    batt_icon_set(soc);
+    batt_layout();
 
     usage_snapshot_t snap;
     usage_store_get(&snap);
@@ -163,15 +281,59 @@ void ui_home_create(void)
     lv_obj_set_style_pad_all(s_scr, 0, 0);
     lv_obj_set_style_radius(s_scr, 0, 0);
 
-    s_clock = make_label(s_scr, 8, 4, &lv_font_montserrat_20);
-    s_wifi = make_label(s_scr, 8, 4, &lv_font_montserrat_14);
-    lv_obj_set_width(s_wifi, 224);
-    lv_obj_set_style_text_align(s_wifi, LV_TEXT_ALIGN_RIGHT, 0);
+    // Top-left clock is inset past the rounded-corner mask
+    // (BSP_LVGL_SCREEN_RADIUS=30 hides x<16 at y=4).
+    s_clock = make_label(s_scr, 18, 4, &lv_font_montserrat_20);
+
+    int bars_x0 = WIFI_BARS_RIGHT -
+        (WIFI_BARS_COUNT * WIFI_BAR_W + (WIFI_BARS_COUNT - 1) * WIFI_BAR_GAP);
+    for (int i = 0; i < WIFI_BARS_COUNT; i++) {
+        int h = 5 + 3 * i;
+        lv_obj_t *bar = lv_obj_create(s_scr);
+        lv_obj_set_size(bar, WIFI_BAR_W, h);
+        lv_obj_set_pos(bar, bars_x0 + i * (WIFI_BAR_W + WIFI_BAR_GAP),
+                       WIFI_BARS_BOTTOM - h);
+        lv_obj_set_style_radius(bar, 1, 0);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_bg_color(bar,
+                                  lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
+        s_wifi_bars[i] = bar;
+    }
+    s_tick = 0;
+    s_last_wifi_key = 0x7FFFFFFF;
 
     s_date = make_label(s_scr, 8, 30, &lv_font_montserrat_14);
-    s_batt = make_label(s_scr, 8, 30, &lv_font_montserrat_14);
-    lv_obj_set_width(s_batt, 224);
-    lv_obj_set_style_text_align(s_batt, LV_TEXT_ALIGN_RIGHT, 0);
+    // Percent label auto-sizes to its text; batt_layout() pins the
+    // whole group to the right edge on every refresh.
+    s_batt = make_label(s_scr, BATT_GROUP_RIGHT - 48, 30,
+                        &lv_font_montserrat_14);
+
+    s_batt_frame = lv_obj_create(s_scr);
+    lv_obj_set_size(s_batt_frame, BATT_FRAME_W, BATT_FRAME_H);
+    lv_obj_set_pos(s_batt_frame, 150, BATT_FRAME_Y);
+    lv_obj_set_style_radius(s_batt_frame, 2, 0);
+    lv_obj_set_style_bg_opa(s_batt_frame, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_batt_frame, 1, 0);
+    lv_obj_set_style_border_color(s_batt_frame,
+                                  lv_palette_main(LV_PALETTE_GREY), 0);
+
+    s_batt_fill = lv_obj_create(s_scr);
+    lv_obj_set_size(s_batt_fill, 0, BATT_FILL_MAX_H);
+    lv_obj_set_pos(s_batt_fill, 150 + BATT_FILL_PAD,
+                   BATT_FRAME_Y + BATT_FILL_PAD);
+    lv_obj_set_style_radius(s_batt_fill, 1, 0);
+    lv_obj_set_style_border_width(s_batt_fill, 0, 0);
+    lv_obj_set_style_bg_color(s_batt_fill,
+                              lv_palette_main(LV_PALETTE_GREEN), 0);
+
+    s_batt_tip = lv_obj_create(s_scr);
+    lv_obj_set_size(s_batt_tip, BATT_TIP_W, BATT_TIP_H);
+    lv_obj_set_pos(s_batt_tip, 150 + BATT_FRAME_W + 2,
+                   BATT_FRAME_Y + (BATT_FRAME_H - BATT_TIP_H) / 2);
+    lv_obj_set_style_radius(s_batt_tip, 1, 0);
+    lv_obj_set_style_border_width(s_batt_tip, 0, 0);
+    lv_obj_set_style_bg_color(s_batt_tip,
+                              lv_palette_main(LV_PALETTE_GREY), 0);
 
     int y = 56;
     for (int i = 0; i < 3; i++) {
@@ -218,9 +380,13 @@ void ui_home_destroy(void)
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL;
-        s_clock = s_wifi = s_date = s_batt = s_status = NULL;
+        s_clock = s_date = s_batt = s_status = NULL;
+        s_batt_frame = s_batt_fill = s_batt_tip = NULL;
         for (int i = 0; i < 3; i++) {
             s_pct[i] = s_bar[i] = s_reset[i] = NULL;
+        }
+        for (int i = 0; i < WIFI_BARS_COUNT; i++) {
+            s_wifi_bars[i] = NULL;
         }
     }
 }
