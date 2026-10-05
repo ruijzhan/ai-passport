@@ -63,11 +63,15 @@ static lv_obj_t *s_wifi_bars[WIFI_BARS_COUNT];
 static unsigned s_tick;
 // Sampled sensor caches (see WIFI_RSSI_SAMPLE_TICKS/BATT_SAMPLE_TICKS).
 // s_rssi/s_wifi_up resample on a Wi-Fi state transition so bars appear
-// the moment the link comes up; s_soc retries every tick while the
-// gauge has not answered yet (bsp_battery_init may still be running).
+// the moment the link comes up; s_soc retries every tick while unknown,
+// suspect-zero, or unconfirmed (gauge init/recalc after wake), and starts
+// from the RTC cache saved before deep sleep.
 static bool s_wifi_up;
 static int s_rssi = WIFI_MGR_RSSI_UNKNOWN;
 static int s_soc = -1;
+// 单次 0% 读数多为唤醒后电量计重算的 transient 值：连续两次才采纳，
+// 期间保持显示 RTC 缓存。s_zero_streak>0 时下一 tick 立刻重采。
+static int s_zero_streak;
 static lv_obj_t *s_date;
 static lv_obj_t *s_batt;
 static lv_obj_t *s_batt_frame;
@@ -267,9 +271,21 @@ static void ui_home_refresh(void)
         wifi_bars_set(lit, weak);
     }
 
-    if (s_soc < 0 || s_tick % BATT_SAMPLE_TICKS == 0) {
+    if (s_soc < 0 || s_soc == 0 || s_zero_streak > 0 ||
+        s_tick % BATT_SAMPLE_TICKS == 0) {
         int soc = bsp_battery_soc();
-        if (soc >= 0) s_soc = soc;  // keep the last good value on a flaky read
+        if (soc < 0) {
+            // 读失败：保留上一次有效值（含 RTC 缓存）。
+        } else if (soc == 0 && s_soc != 0) {
+            // 骤降到 0 多为重算 transient：需连续确认才覆盖缓存/旧值。
+            if (++s_zero_streak >= 2) {
+                s_soc = 0;
+                s_zero_streak = 0;
+            }
+        } else {
+            s_zero_streak = 0;
+            s_soc = soc;  // keep the last good value on a flaky read
+        }
     }
     if (s_soc != s_last_soc) {
         s_last_soc = s_soc;
@@ -342,7 +358,10 @@ void ui_home_create(void)
     s_tick = 0;
     s_wifi_up = false;
     s_rssi = WIFI_MGR_RSSI_UNKNOWN;
-    s_soc = -1;
+    // Deep sleep reboot 后 RAM 全丢：用 RTC 缓存做初始值，芯片就绪前显示
+    // 上次休眠前的电量，而不是 0% 或 "--"。冷启动无缓存时仍为 -1。
+    s_soc = bsp_battery_cached_soc();
+    s_zero_streak = 0;
     s_last_soc = INT_MIN;
     s_last_lit = INT_MIN;
     s_last_weak = false;

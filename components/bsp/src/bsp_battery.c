@@ -3,6 +3,7 @@
 #include "bsp_battery.h"
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -40,6 +41,15 @@ _Static_assert(sizeof(s_battery_profile) == CW_PROFILE_SIZE,
                "CW2017 battery profile must contain exactly 80 bytes");
 
 static i2c_master_dev_handle_t s_dev;
+// s_ready 为 true 前芯片可能正处于 profile 重写/重启计算中，此时 SOC
+// 读数不可信（可能为 transient 0），必须返回 -1 让上层保留缓存值。
+static bool s_ready;
+// Deep sleep 会 reboot，RAM 缓存丢失。入睡前把最后一次有效 SOC 存入
+// RTC slow memory，唤醒后 UI 可立即显示缓存值，而不是 0% 或 "--"。
+// RTC 在冷启动后内容未定义，用 magic + 范围双重校验；掉电后自然失效。
+#define BATT_RTC_MAGIC 0x42415454u  // "BATT"
+static RTC_DATA_ATTR uint32_t s_rtc_magic;
+static RTC_DATA_ATTR int s_rtc_soc;
 
 static esp_err_t cw_read(uint8_t reg, uint8_t *buf, size_t n) {
     if (!s_dev) return ESP_ERR_INVALID_STATE;
@@ -112,29 +122,39 @@ static int cw_update_profile(void) {
     return cw_enter_active();
 }
 
-// 首次计算期间 SOC 可能暂时大于 100；最多等待 5 秒再判定初始化失败。
+// 首次计算期间 SOC 可能暂时大于 100 或短暂为 0；只接受 1..100 为
+// 就绪。真正的 0% 电池会持续返回 0，等待整整 5 秒后才接受，避免唤醒
+// 后把 transient 0 当成有效值锁存。
 static int cw_wait_soc_ready(void) {
+    bool saw_zero = false;
     for (int retry = 0; retry < 50; retry++) {
         uint8_t soc = 0;
         vTaskDelay(pdMS_TO_TICKS(100));
-        if (cw_read(CW_REG_SOC_H, &soc, 1) == 0 && soc <= 100) return 0;
+        if (cw_read(CW_REG_SOC_H, &soc, 1) != 0) continue;
+        if (soc >= 1 && soc <= 100) return 0;
+        if (soc == 0) saw_zero = true;
     }
-    return -1;
+    return saw_zero ? 0 : -1;
 }
 
 esp_err_t bsp_battery_init(void) {
-    if (s_dev) return ESP_OK;
+    if (s_dev && s_ready) return ESP_OK;
+    s_ready = false;
 
-    esp_err_t e = bsp_i2c_init();
-    if (e != ESP_OK) return e;
+    if (!s_dev) {
+        esp_err_t e = bsp_i2c_init();
+        if (e != ESP_OK) return e;
 
-    i2c_device_config_t dc = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = BSP_I2C_CW2017_ADDR,
-        .scl_speed_hz    = 100000,
-    };
-    e = i2c_master_bus_add_device(bsp_i2c_bus(), &dc, &s_dev);
-    if (e != ESP_OK) { ESP_LOGE(TAG, "添加 I2C 设备失败: %s", esp_err_to_name(e)); return e; }
+        i2c_device_config_t dc = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address  = BSP_I2C_CW2017_ADDR,
+            .scl_speed_hz    = 100000,
+        };
+        e = i2c_master_bus_add_device(bsp_i2c_bus(), &dc, &s_dev);
+        if (e != ESP_OK) { ESP_LOGE(TAG, "添加 I2C 设备失败: %s", esp_err_to_name(e)); return e; }
+    }
+
+    esp_err_t e = ESP_OK;
 
     uint8_t ver = 0;
     if (cw_read(CW_REG_VERSION, &ver, 1) != 0) {
@@ -179,16 +199,35 @@ esp_err_t bsp_battery_init(void) {
         goto fail;
     }
 
+    s_ready = true;
     return ESP_OK;
 
 fail:
     i2c_master_bus_rm_device(s_dev);
     s_dev = NULL;
+    s_ready = false;
     return e;
+}
+
+int bsp_battery_cached_soc(void) {
+    if (s_rtc_magic == BATT_RTC_MAGIC && s_rtc_soc >= 0 && s_rtc_soc <= 100) {
+        return s_rtc_soc;
+    }
+    return -1;
 }
 
 esp_err_t bsp_battery_sleep(void) {
     if (!s_dev) return ESP_OK;
+
+    // Deep sleep 后 reboot，RAM 全丢。先把当前有效 SOC 存入 RTC，唤醒后
+    // UI 可立即显示缓存值。读失败不阻塞休眠：只是本次没有新缓存可用。
+    {
+        uint8_t b[2] = { 0 };
+        if (s_ready && cw_read(CW_REG_SOC_H, b, 2) == 0 && b[0] <= 100) {
+            s_rtc_soc = b[0];
+            s_rtc_magic = BATT_RTC_MAGIC;
+        }
+    }
 
     for (unsigned attempt = 1; attempt <= 2; attempt++) {
         uint8_t actual = 0;
@@ -198,6 +237,7 @@ esp_err_t bsp_battery_sleep(void) {
         if (write_error == ESP_OK && read_error == ESP_OK &&
             actual == CW_CONFIG_SLEEP) {
             ESP_LOGI(TAG, "CW2017 已进入休眠并通过寄存器校验");
+            s_ready = false;
             return ESP_OK;
         }
 
@@ -213,6 +253,7 @@ esp_err_t bsp_battery_sleep(void) {
 }
 
 int bsp_battery_soc(void) {
+    if (!s_ready) return -1;
     uint8_t b[2] = { 0 };
     if (cw_read(CW_REG_SOC_H, b, 2) != 0) return -1;
     int soc = b[0];                       // 高字节即整数百分比
@@ -221,6 +262,7 @@ int bsp_battery_soc(void) {
 }
 
 int bsp_battery_mv(void) {
+    if (!s_ready) return -1;
     uint8_t b[2] = { 0 };
     if (cw_read(CW_REG_VCELL_H, b, 2) != 0) return -1;
     uint32_t raw = ((uint32_t)b[0] << 8 | b[1]) & 0x3FFF;   // 14bit
