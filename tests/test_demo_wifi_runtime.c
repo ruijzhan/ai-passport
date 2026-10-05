@@ -1,5 +1,5 @@
 #include "demo_stubs/demo_runtime.c"
-#include "../main/demo_wifi.c"
+#include "../examples/baseline-demo/demo_wifi.c"
 
 static unsigned step, fail_at, destroys;
 static bool netif_live, driver_registered, defaults_live, wifi_live, wifi_running, handler_live;

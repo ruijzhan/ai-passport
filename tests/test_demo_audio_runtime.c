@@ -1,5 +1,5 @@
 #include "demo_stubs/demo_runtime.c"
-#include "../main/demo_audio.c"
+#include "../examples/baseline-demo/demo_audio.c"
 
 static void cancel_recording(void) { s_cancel = true; }
 

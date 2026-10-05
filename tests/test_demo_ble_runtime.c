@@ -1,5 +1,5 @@
 #include "demo_stubs/demo_runtime.c"
-#include "../main/demo_ble.c"
+#include "../examples/baseline-demo/demo_ble.c"
 
 int main(void) {
     test_sem_fails = true;

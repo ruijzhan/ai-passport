@@ -53,7 +53,7 @@ class DeepSleepContractTest(unittest.TestCase):
         cls.battery = read("components/bsp/src/bsp_battery.c")
         cls.display = read("components/bsp/src/bsp_display.c")
         cls.i2c = read("components/bsp/src/bsp_i2c.c")
-        cls.demo = read("main/demo_low_power.c")
+        cls.demo = read("examples/baseline-demo/demo_low_power.c")
 
     def test_es8311_force_sleep_sequence_is_complete_and_ordered(self) -> None:
         expected = [
