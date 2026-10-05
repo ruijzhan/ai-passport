@@ -1,0 +1,42 @@
+# main/Kconfig.projbuild — OpenCode Go usage application options.
+# Wi-Fi credentials and the API key are intentionally empty here.
+# Set them locally with `idf.py menuconfig` (root `sdkconfig` is git-ignored);
+# never commit them to `sdkconfig.defaults` or documentation.
+
+menu "OpenCode Go Usage App"
+
+    config APP_WIFI_SSID
+        string "Wi-Fi SSID to join on boot"
+        default ""
+
+    config APP_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config APP_WIFI_AUTOCONNECT
+        bool "Connect to Wi-Fi automatically on boot"
+        default y
+
+    config APP_NTP_SERVER
+        string "NTP server for time sync"
+        default "ntp.cloud.aliyuncs.com"
+
+    config APP_TIMEZONE
+        string "POSIX timezone for displayed local time"
+        default "CST-8"
+
+    config APP_OPENCODE_API_KEY
+        string "OpenCode Go API key (Bearer token for /zen/go/v1/usage)"
+        default ""
+
+    config APP_USAGE_REFRESH_S
+        int "Automatic usage refresh interval (seconds)"
+        range 60 3600
+        default 180
+
+    config APP_IDLE_SLEEP_S
+        int "Idle time before deep sleep (seconds)"
+        range 60 3600
+        default 300
+
+endmenu
