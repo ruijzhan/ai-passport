@@ -12,6 +12,7 @@
 //   OK Refresh
 #include "ui_home.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -66,6 +67,12 @@ static lv_obj_t *s_marker[3];
 static lv_obj_t *s_reset[3];
 static lv_obj_t *s_status;
 static lv_timer_t *s_timer;
+// Last rendered values; INT_MIN forces the first refresh after create() to
+// draw. Re-setting an unchanged label/style reallocates LVGL text or
+// invalidates the area, so identical values are skipped.
+static int s_last_soc = INT_MIN;
+static int s_last_lit = INT_MIN;
+static bool s_last_weak;
 
 // Pace marker: 2px black line, same height as the 12px bar, centered on
 // the time-progress position so usage-vs-average is directly comparable.
@@ -79,7 +86,11 @@ static const char *const TITLES[3] = {
 
 static void set_text(lv_obj_t *label, const char *text)
 {
-    if (label) lv_label_set_text(label, text);
+    if (!label || !text) return;
+    const char *current = lv_label_get_text(label);
+    if (!current || strcmp(current, text) != 0) {
+        lv_label_set_text(label, text);
+    }
 }
 
 static int64_t window_period_s(int i, int64_t now_utc)
@@ -182,7 +193,6 @@ static void batt_icon_set(int soc)
             fill = lv_palette_main(LV_PALETTE_GREEN);
         }
         if (soc > 100) soc = 100;
-        if (soc < 0) soc = 0;
         fill_w = (BATT_FILL_MAX_W * soc) / 100;
     }
     lv_obj_set_style_bg_color(s_batt_fill, fill, 0);
@@ -248,14 +258,8 @@ void ui_home_refresh(void)
     case WIFI_MGR_UP: {
         int rssi = wifi_mgr_rssi();
         int level = wifi_signal_level(rssi);
-        if (level < 0) {
-            lit = -1;
-        } else {
-            if (level <= 1) {
-                weak = true;
-            }
-            lit = level;
-        }
+        lit = level;
+        weak = level >= 0 && level <= 1;
         int key = (WIFI_MGR_UP << 16) | (level + 1);
         if (key != s_last_wifi_key) {
             s_last_wifi_key = key;
@@ -278,14 +282,21 @@ void ui_home_refresh(void)
         }
         break;
     }
-    wifi_bars_set(lit, weak);
+    if (lit != s_last_lit || weak != s_last_weak) {
+        s_last_lit = lit;
+        s_last_weak = weak;
+        wifi_bars_set(lit, weak);
+    }
 
     int soc = bsp_battery_soc();
-    if (soc >= 0) snprintf(buf, sizeof(buf), "%d%%", soc);
-    else snprintf(buf, sizeof(buf), "--");
-    set_text(s_batt, buf);
-    batt_icon_set(soc);
-    batt_layout();
+    if (soc != s_last_soc) {
+        s_last_soc = soc;
+        if (soc >= 0) snprintf(buf, sizeof(buf), "%d%%", soc);
+        else snprintf(buf, sizeof(buf), "--");
+        set_text(s_batt, buf);
+        batt_icon_set(soc);
+        batt_layout();
+    }
 
     usage_snapshot_t snap;
     usage_store_get(&snap);
@@ -349,10 +360,13 @@ void ui_home_create(void)
     }
     s_tick = 0;
     s_last_wifi_key = 0x7FFFFFFF;
+    s_last_soc = INT_MIN;
+    s_last_lit = INT_MIN;
+    s_last_weak = false;
 
     s_date = make_label(s_scr, 8, 30, &lv_font_montserrat_14);
     // Percent label auto-sizes to its text; batt_layout() pins the
-    // whole group to the right edge on every refresh.
+    // whole group to the right edge whenever the SOC changes.
     s_batt = make_label(s_scr, BATT_GROUP_RIGHT - 48, 30,
                         &lv_font_montserrat_14);
 

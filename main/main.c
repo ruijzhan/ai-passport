@@ -39,7 +39,6 @@ typedef struct {
 } input_event_t;
 
 static QueueHandle_t s_input_queue;
-static TaskHandle_t s_input_task;
 static TaskHandle_t s_worker_task;
 static volatile bool s_input_ready;
 
@@ -98,10 +97,9 @@ static void worker_task(void *arg)
         if (power_idle_expired()) {
             power_idle_enter_deep_sleep();
         }
-        if (got == pdTRUE && cmd == REFRESH_CMD) {
-            bool ok = do_refresh();
-            next_refresh = esp_timer_get_time() + (ok ? interval_us : retry_us);
-        } else if (esp_timer_get_time() >= next_refresh) {
+        // Refresh on OK request or when the periodic deadline passed.
+        if ((got == pdTRUE && cmd == REFRESH_CMD) ||
+            esp_timer_get_time() >= next_refresh) {
             bool ok = do_refresh();
             next_refresh = esp_timer_get_time() + (ok ? interval_us : retry_us);
         }
@@ -155,7 +153,7 @@ void app_main(void)
         ESP_LOGE(TAG, "input queue creation failed");
         return;
     }
-    if (xTaskCreate(input_task, "go_input", 3072, NULL, 5, &s_input_task) != pdPASS) {
+    if (xTaskCreate(input_task, "go_input", 3072, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "input task creation failed");
         return;
     }

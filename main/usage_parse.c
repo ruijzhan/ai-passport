@@ -6,6 +6,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+// JSON permits only these whitespace characters (RFC 8259).
+static bool json_ws(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static unsigned month_days(int y, unsigned mo)
+{
+    static const unsigned char dim[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+    if (mo < 1U || mo > 12U) return 0;
+    unsigned limit = dim[mo - 1U];
+    if (mo == 2U &&
+        ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) limit = 29;
+    return limit;
+}
+
 // Days since 1970-01-01 (Howard Hinnant's algorithm), valid for all int years.
 static int64_t days_from_civil(int y, unsigned m, unsigned d)
 {
@@ -33,16 +51,15 @@ static void civil_from_days(int64_t z, int *y, unsigned *m, unsigned *d)
     *d = dd;
 }
 
-// Locate the object following "key": bounded by its braces. Window objects
-// contain only scalars, so the first '{' ... first '}' pair is sufficient.
+// Locate the object following key (with its quotes, e.g. "\"weekly\""),
+// bounded by its braces. Window objects contain only scalars, so the first
+// '{' ... first '}' pair is sufficient.
 static bool window_span(const char *json, const char *key,
                         const char **begin, const char **end)
 {
-    char pattern[32];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    const char *k = strstr(json, pattern);
+    const char *k = strstr(json, key);
     if (!k) return false;
-    const char *open = strchr(k + strlen(pattern), '{');
+    const char *open = strchr(k + strlen(key), '{');
     if (!open) return false;
     const char *close = strchr(open, '}');
     if (!close) return false;
@@ -51,30 +68,25 @@ static bool window_span(const char *json, const char *key,
     return true;
 }
 
-// Find `:"value"` or `:value` for a field inside [begin, end).
+// Find `:"value"` or `:value` for a quoted field inside [begin, end).
 static const char *field_value(const char *begin, const char *end,
                                const char *field)
 {
-    char pattern[32];
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
+    const size_t field_len = strlen(field);
     const char *p = begin;
     while (p < end) {
-        p = strstr(p, pattern);
+        p = strstr(p, field);
         if (!p || p >= end) return NULL;
-        const char *colon = strchr(p + strlen(pattern), ':');
+        const char *colon = strchr(p + field_len, ':');
         if (!colon || colon >= end) return NULL;
         // Reject matches from a longer name such as "percent_x".
-        const char *after_key = p + strlen(pattern);
-        if (after_key < colon) {
-            const char c = *after_key;
-            if (c != ' ' && c != '\t' && c != '\r' && c != '\n') {
-                p = after_key;
-                continue;
-            }
+        const char *after_key = p + field_len;
+        if (after_key < colon && !json_ws(*after_key)) {
+            p = after_key;
+            continue;
         }
         p = colon + 1;
-        while (p < end && (*p == ' ' || *p == '\t' ||
-                           *p == '\r' || *p == '\n')) p++;
+        while (p < end && json_ws(*p)) p++;
         return (p < end) ? p : NULL;
     }
     return NULL;
@@ -82,14 +94,14 @@ static const char *field_value(const char *begin, const char *end,
 
 static bool parse_status_ok(const char *begin, const char *end)
 {
-    const char *v = field_value(begin, end, "status");
+    const char *v = field_value(begin, end, "\"status\"");
     if (!v || v + 4 > end || *v != '"') return false;
     return strncmp(v + 1, "ok\"", 3) == 0;
 }
 
 static bool parse_percent(const char *begin, const char *end, int *percent)
 {
-    const char *v = field_value(begin, end, "percent");
+    const char *v = field_value(begin, end, "\"percent\"");
     if (!v) return false;
     char *stop = NULL;
     // strtod tolerates both "4" and "4.0"; trailing text is ignored.
@@ -111,13 +123,7 @@ int64_t usage_parse_time(const char *iso8601)
     if (y < 1970 || mo < 1 || mo > 12 || d < 1 || d > 31 ||
         hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60) return -1;
     // Reject impossible month/day combos (leap years included).
-    static const unsigned char dim[12] = {
-        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
-    };
-    unsigned limit = dim[(unsigned)mo - 1U];
-    if (mo == 2 &&
-        ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) limit = 29;
-    if ((unsigned)d > limit) return -1;
+    if ((unsigned)d > month_days(y, (unsigned)mo)) return -1;
     return days_from_civil(y, (unsigned)mo, (unsigned)d) * 86400 +
            (int64_t)hh * 3600 + (int64_t)mm * 60 + ss;
 }
@@ -125,16 +131,13 @@ int64_t usage_parse_time(const char *iso8601)
 static void parse_window(const char *json, const char *key,
                          usage_window_t *w)
 {
-    w->valid = false;
-    w->percent = 0;
-    w->resets_at_utc = -1;
-    w->has_reset = false;
+    *w = (usage_window_t){ .resets_at_utc = -1 };
     const char *begin = NULL, *end = NULL;
     if (!window_span(json, key, &begin, &end)) return;
     if (!parse_status_ok(begin, end)) return;
     if (!parse_percent(begin, end, &w->percent)) return;
     w->valid = true;
-    const char *v = field_value(begin, end, "resetsAt");
+    const char *v = field_value(begin, end, "\"resetsAt\"");
     if (v && *v == '"') {
         char stamp[40];
         size_t i = 0;
@@ -155,13 +158,15 @@ void usage_parse(const char *json, usage_info_t *out)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    out->rolling.resets_at_utc = -1;
-    out->weekly.resets_at_utc = -1;
-    out->monthly.resets_at_utc = -1;
+    usage_window_t *const wins[] = {
+        &out->rolling, &out->weekly, &out->monthly,
+    };
+    for (size_t i = 0; i < 3; i++) wins[i]->resets_at_utc = -1;
     if (!json) return;
-    parse_window(json, "rolling", &out->rolling);
-    parse_window(json, "weekly", &out->weekly);
-    parse_window(json, "monthly", &out->monthly);
+    static const char *const keys[] = {
+        "\"rolling\"", "\"weekly\"", "\"monthly\"",
+    };
+    for (size_t i = 0; i < 3; i++) parse_window(json, keys[i], wins[i]);
 }
 
 void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
@@ -199,18 +204,6 @@ void usage_format_utc(int64_t epoch, char *buf, size_t len)
     civil_from_days(days, &y, &mo, &d);
     snprintf(buf, len, "%04d-%02u-%02u %02u:%02u:%02u",
              y, mo, d, tod / 3600U, (tod % 3600U) / 60U, tod % 60U);
-}
-
-static unsigned month_days(int y, unsigned mo)
-{
-    static const unsigned char dim[12] = {
-        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
-    };
-    if (mo < 1U || mo > 12U) return 0;
-    unsigned limit = dim[mo - 1U];
-    if (mo == 2U &&
-        ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) limit = 29;
-    return limit;
 }
 
 int usage_days_in_month(int64_t epoch_utc)
