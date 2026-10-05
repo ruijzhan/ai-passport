@@ -170,7 +170,6 @@ void usage_store_save(void)
 {
     if (!s_lock) return;
     usage_snapshot_t copy;
-    memset(&copy, 0, sizeof(copy));
     if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return;
     copy = s_snapshot;
     xSemaphoreGive(s_lock);

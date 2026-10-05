@@ -22,7 +22,6 @@ static bool s_loop_ready;
 static bool s_wifi_init;
 static bool s_wifi_on;
 static bool s_handlers;
-static unsigned s_retry;
 
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -30,7 +29,6 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     (void)base;
     (void)id;
     (void)data;
-    s_retry = 0;
     s_state = WIFI_MGR_UP;
     ESP_LOGI(TAG, "got IP");
 }
@@ -43,7 +41,6 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_state == WIFI_MGR_UP) ESP_LOGW(TAG, "disconnected, reconnecting");
         s_state = WIFI_MGR_CONNECTING;
-        s_retry++;
         // Best effort: the stack retries on its own if this fails.
         esp_err_t err = esp_wifi_connect();
         if (err != ESP_OK) {

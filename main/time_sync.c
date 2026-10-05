@@ -30,9 +30,9 @@ static void on_sync(struct timeval *tv)
 
 void time_sync_start(void)
 {
+    if (s_started) return;
     setenv("TZ", CONFIG_APP_TIMEZONE, 1);
     tzset();
-    if (s_started) return;
     // SNTP posts to the LWIP tcpip mbox, which only exists after the
     // network stack is up. Starting it with Wi-Fi down (empty SSID,
     // offline) aborts in tcpip_callback and boot-loops the device.
