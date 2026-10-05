@@ -62,9 +62,16 @@ static lv_obj_t *s_batt_fill;
 static lv_obj_t *s_batt_tip;
 static lv_obj_t *s_pct[3];
 static lv_obj_t *s_bar[3];
+static lv_obj_t *s_marker[3];
 static lv_obj_t *s_reset[3];
 static lv_obj_t *s_status;
 static lv_timer_t *s_timer;
+
+// Pace marker: 2px black line, same height as the 12px bar, centered on
+// the time-progress position so usage-vs-average is directly comparable.
+#define USAGE_MARKER_W 2
+#define USAGE_MARKER_H 12
+#define USAGE_MARKER_OVERHANG ((USAGE_MARKER_H - 12) / 2)
 
 static const char *const TITLES[3] = {
     "5H ROLLING", "WEEKLY", "MONTHLY",
@@ -73,6 +80,46 @@ static const char *const TITLES[3] = {
 static void set_text(lv_obj_t *label, const char *text)
 {
     if (label) lv_label_set_text(label, text);
+}
+
+static int64_t window_period_s(int i, int64_t now_utc)
+{
+    switch (i) {
+    case 0:
+        return USAGE_ROLLING_PERIOD_S;
+    case 1:
+        return USAGE_WEEKLY_PERIOD_S;
+    case 2:
+        return usage_month_period_s(now_utc);
+    default:
+        return -1;
+    }
+}
+
+static void marker_update(int i, const usage_window_t *w, int64_t now,
+                          bool time_ok)
+{
+    if (i < 0 || i >= 3 || !s_marker[i] || !s_bar[i]) {
+        return;
+    }
+    if (!w->valid || !w->has_reset || !time_ok) {
+        lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    int pct = usage_time_progress(now, w->resets_at_utc,
+                                  window_period_s(i, now));
+    if (pct < 0) {
+        lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+    // Center the 2px line on the time-progress position.
+    lv_coord_t bar_x = lv_obj_get_x(s_bar[i]);
+    lv_coord_t bar_y = lv_obj_get_y(s_bar[i]);
+    lv_coord_t bar_w = lv_obj_get_width(s_bar[i]);
+    lv_coord_t mx = bar_x + (bar_w * pct) / 100 - USAGE_MARKER_W / 2;
+    lv_coord_t my = bar_y - USAGE_MARKER_OVERHANG;
+    lv_obj_set_pos(s_marker[i], mx, my);
 }
 
 static void window_row(int i, const usage_window_t *w, int64_t now,
@@ -100,6 +147,7 @@ static void window_row(int i, const usage_window_t *w, int64_t now,
         snprintf(buf, sizeof(buf), "Reset --");
     }
     set_text(s_reset[i], buf);
+    marker_update(i, w, now, time_ok);
 }
 
 static void wifi_bars_set(int lit, bool weak)
@@ -349,6 +397,15 @@ void ui_home_create(void)
         lv_bar_set_range(s_bar[i], 0, 100);
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
 
+        s_marker[i] = lv_obj_create(s_scr);
+        lv_obj_set_size(s_marker[i], USAGE_MARKER_W, USAGE_MARKER_H);
+        lv_obj_set_pos(s_marker[i], 8, y + 20 - USAGE_MARKER_OVERHANG);
+        lv_obj_set_style_radius(s_marker[i], 0, 0);
+        lv_obj_set_style_border_width(s_marker[i], 0, 0);
+        lv_obj_set_style_bg_color(s_marker[i], lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_marker[i], LV_OPA_COVER, 0);
+        lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+
         s_reset[i] = make_label(s_scr, 8, y + 36, &lv_font_montserrat_14);
         y += 58;
     }
@@ -383,7 +440,7 @@ void ui_home_destroy(void)
         s_clock = s_date = s_batt = s_status = NULL;
         s_batt_frame = s_batt_fill = s_batt_tip = NULL;
         for (int i = 0; i < 3; i++) {
-            s_pct[i] = s_bar[i] = s_reset[i] = NULL;
+            s_pct[i] = s_bar[i] = s_reset[i] = s_marker[i] = NULL;
         }
         for (int i = 0; i < WIFI_BARS_COUNT; i++) {
             s_wifi_bars[i] = NULL;
