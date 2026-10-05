@@ -1,5 +1,10 @@
 // main/usage_store.h — latest fetched usage snapshot shared by the
 // network worker (writer) and the LVGL timer (reader).
+//
+// The snapshot survives deep sleep: it is persisted to NVS on
+// usage_store_save() (called before deep sleep) and reloaded by
+// usage_store_init() on the next boot, so the UI can render cached
+// quota/reset data immediately while a fresh fetch runs.
 #pragma once
 
 #include <stdbool.h>
@@ -21,3 +26,7 @@ void usage_store_init(void);
 void usage_store_set_ok(const usage_info_t *info, time_t now);
 void usage_store_set_failed(const char *reason, time_t now);
 void usage_store_get(usage_snapshot_t *out);
+// Persist the current RAM snapshot to NVS. No-op when there is no data
+// yet. Call before deep sleep; failures are logged and ignored so sleep
+// always proceeds. Safe to call from any task (never from ISR/timer).
+void usage_store_save(void);

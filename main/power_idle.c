@@ -21,6 +21,7 @@
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "ui_home.h"
+#include "usage_store.h"
 #include "wifi_mgr.h"
 
 static const char *TAG = "power_idle";
@@ -103,6 +104,11 @@ void power_idle_enter_deep_sleep(void)
              (long long)power_idle_idle_s());
     ESP_LOGI(TAG, "waiting for button release before sleep");
     wait_for_button_release();
+
+    // Persist the last good quota snapshot so the next boot renders cached
+    // data immediately instead of "No data yet". Failures only drop the
+    // cache; sleep always proceeds.
+    usage_store_save();
 
     // All display work happens under a single LVGL lock: destroy the UI
     // and suspend the panel back-to-back. After that nothing remains to

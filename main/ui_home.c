@@ -3,7 +3,7 @@
 //   14:22:05            WiFi -58dBm
 //   2026-10-06 Tue        BAT 87%
 //   ------------------------------
-//   5H ROLLING            USED 4%
+//   5H ROLLING            4%
 //   [bar]
 //   Reset in 02:15:33
 //   WEEKLY ... / MONTHLY ...
@@ -12,6 +12,7 @@
 //   OK Refresh
 #include "ui_home.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -42,14 +43,19 @@ static void set_text(lv_obj_t *label, const char *text)
     if (label) lv_label_set_text(label, text);
 }
 
-static void window_row(int i, const usage_window_t *w, int64_t now)
+static void window_row(int i, const usage_window_t *w, int64_t now,
+                       bool time_ok)
 {
     char buf[48];
     if (w->valid) {
-        snprintf(buf, sizeof(buf), "USED %d%%", w->percent);
+        snprintf(buf, sizeof(buf), "%d%%", w->percent);
         set_text(s_pct[i], buf);
         lv_bar_set_value(s_bar[i], w->percent, LV_ANIM_OFF);
-        if (w->has_reset) {
+        // Before NTP sync the wall clock is bogus (1970), so a countdown
+        // from cached resets_at_utc would show a huge day count. Keep the
+        // cached percent/bar visible immediately and wait for time sync
+        // before rendering the reset countdown.
+        if (w->has_reset && time_ok) {
             char cd[24];
             usage_format_countdown(now, w->resets_at_utc, cd, sizeof(cd));
             snprintf(buf, sizeof(buf), "Reset in %s", cd);
@@ -57,7 +63,7 @@ static void window_row(int i, const usage_window_t *w, int64_t now)
             snprintf(buf, sizeof(buf), "Reset --");
         }
     } else {
-        set_text(s_pct[i], "USED --");
+        set_text(s_pct[i], "--");
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
         snprintf(buf, sizeof(buf), "Reset --");
     }
@@ -121,7 +127,8 @@ void ui_home_refresh(void)
         &snap.info.rolling, &snap.info.weekly, &snap.info.monthly
     };
     int64_t now_utc = (int64_t)now;
-    for (int i = 0; i < 3; i++) window_row(i, wins[i], now_utc);
+    bool time_ok = time_sync_done();
+    for (int i = 0; i < 3; i++) window_row(i, wins[i], now_utc, time_ok);
 
     if (!snap.has_data) {
         set_text(s_status, snap.last_failed ? snap.last_error : "No data yet");
@@ -129,14 +136,15 @@ void ui_home_refresh(void)
         snprintf(buf, sizeof(buf), "Update failed, last data kept: %.48s",
                  snap.last_error);
         set_text(s_status, buf);
-    } else if (time_sync_done() && snap.fetched_at > 0) {
+    } else if (time_ok && snap.fetched_at > 0) {
         long age = (long)(now - snap.fetched_at);
         if (age < 0) age = 0;
         if (age < 90) snprintf(buf, sizeof(buf), "Updated %lds ago", age);
         else snprintf(buf, sizeof(buf), "Updated %ldm ago", age / 60);
         set_text(s_status, buf);
     } else {
-        set_text(s_status, "Updated");
+        // Cached snapshot restored after wake, fresh fetch pending.
+        set_text(s_status, "Cached data");
     }
 }
 
