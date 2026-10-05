@@ -24,14 +24,18 @@ run_static_checks() {
     "${actionlint_bin}" -color .github/workflows/*.yml
 
     test_dir="$(mktemp -d /tmp/ai-passport-host-tests.XXXXXX)"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_ui_pixel_math.c main/ui_pixel_math.c \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Iexamples/baseline-demo \
+        tests/test_ui_pixel_math.c examples/baseline-demo/ui_pixel_math.c \
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_demo_navigation.c main/demo_navigation.c \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Iexamples/baseline-demo \
+        tests/test_demo_navigation.c examples/baseline-demo/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"
     "${test_dir}/test_demo_navigation"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_usage_parse.c main/usage_parse.c \
+        -o "${test_dir}/test_usage_parse"
+    "${test_dir}/test_usage_parse"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
@@ -56,7 +60,7 @@ run_static_checks() {
     "${test_dir}/test_bsp_audio_recovery"
     for demo in audio low_power ble wifi; do
         "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
-            -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
+            -ffunction-sections -fdata-sections -Itests/demo_stubs -Iexamples/baseline-demo \
             "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
