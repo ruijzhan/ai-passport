@@ -3,9 +3,6 @@
 
 int wifi_signal_level(int rssi_dbm)
 {
-    if (rssi_dbm == 0) {
-        return -1;
-    }
     if (rssi_dbm >= -55) {
         return 4;
     }

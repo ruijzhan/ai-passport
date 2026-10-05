@@ -1,10 +1,12 @@
 // main/usage_parse.c — minimal JSON field scanner for the usage response.
 // See usage_parse.h for the contract.
+#define _POSIX_C_SOURCE 200809L  // gmtime_r under strict -std=c11
 #include "usage_parse.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // JSON permits only these whitespace characters (RFC 8259).
 static bool json_ws(char c)
@@ -35,20 +37,30 @@ static int64_t days_from_civil(int y, unsigned m, unsigned d)
     return (int64_t)era * 146097 + (int64_t)doe - 719468;
 }
 
-static void civil_from_days(int64_t z, int *y, unsigned *m, unsigned *d)
+const usage_window_desc_t USAGE_WINDOWS[USAGE_WINDOW_COUNT] = {
+    { "\"rolling\"", "5H ROLLING" },
+    { "\"weekly\"", "WEEKLY" },
+    { "\"monthly\"", "MONTHLY" },
+};
+
+usage_window_t *usage_window_at(usage_info_t *info, int i)
 {
-    z += 719468;
-    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-    const unsigned doe = (unsigned)(z - era * 146097);
-    const unsigned yoe = (doe - doe / 1460U + doe / 36524U - doe / 146096U) / 365U;
-    int yy = (int)yoe + (int)(era * 400);
-    const unsigned doy = doe - (365U * yoe + yoe / 4U - yoe / 100U);
-    const unsigned mp = (5U * doy + 2U) / 153U;
-    const unsigned dd = doy - (153U * mp + 2U) / 5U + 1U;
-    const unsigned mm = mp + (mp < 10U ? 3U : (unsigned)-9);
-    *y = yy + (mm <= 2U);
-    *m = mm;
-    *d = dd;
+    if (!info || i < 0 || i >= USAGE_WINDOW_COUNT) return NULL;
+    switch (i) {
+    case 0: return &info->rolling;
+    case 1: return &info->weekly;
+    default: return &info->monthly;
+    }
+}
+
+int64_t usage_window_period_s(int i, int64_t now_utc)
+{
+    switch (i) {
+    case 0: return USAGE_ROLLING_PERIOD_S;
+    case 1: return USAGE_WEEKLY_PERIOD_S;
+    case 2: return usage_month_period_s(now_utc);
+    default: return -1;
+    }
 }
 
 // Locate the object following key (with its quotes, e.g. "\"weekly\""),
@@ -158,15 +170,13 @@ void usage_parse(const char *json, usage_info_t *out)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    usage_window_t *const wins[] = {
-        &out->rolling, &out->weekly, &out->monthly,
-    };
-    for (size_t i = 0; i < 3; i++) wins[i]->resets_at_utc = -1;
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+        usage_window_at(out, i)->resets_at_utc = -1;
+    }
     if (!json) return;
-    static const char *const keys[] = {
-        "\"rolling\"", "\"weekly\"", "\"monthly\"",
-    };
-    for (size_t i = 0; i < 3; i++) parse_window(json, keys[i], wins[i]);
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+        parse_window(json, USAGE_WINDOWS[i].json_key, usage_window_at(out, i));
+    }
 }
 
 void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
@@ -190,30 +200,13 @@ void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
     }
 }
 
-void usage_format_utc(int64_t epoch, char *buf, size_t len)
-{
-    if (!buf || len == 0) return;
-    if (epoch < 0) {
-        snprintf(buf, len, "--");
-        return;
-    }
-    int64_t days = epoch / 86400;
-    unsigned tod = (unsigned)(epoch % 86400);
-    int y = 0;
-    unsigned mo = 0, d = 0;
-    civil_from_days(days, &y, &mo, &d);
-    snprintf(buf, len, "%04d-%02u-%02u %02u:%02u:%02u",
-             y, mo, d, tod / 3600U, (tod % 3600U) / 60U, tod % 60U);
-}
-
 int usage_days_in_month(int64_t epoch_utc)
 {
     if (epoch_utc < 0) return -1;
-    int64_t days = epoch_utc / 86400;
-    int y = 0;
-    unsigned mo = 0, d = 0;
-    civil_from_days(days, &y, &mo, &d);
-    unsigned limit = month_days(y, mo);
+    time_t t = (time_t)epoch_utc;
+    struct tm tm = { 0 };
+    if (!gmtime_r(&t, &tm)) return -1;
+    unsigned limit = month_days(tm.tm_year + 1900, (unsigned)tm.tm_mon + 1);
     if (limit == 0) return -1;
     return (int)limit;
 }

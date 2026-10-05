@@ -17,6 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "nvs_flash.h"
 
 #include "power_idle.h"
 #include "time_sync.h"
@@ -29,9 +30,18 @@ static const char *TAG = "opencode_go";
 
 #define INPUT_QUEUE_DEPTH 8
 #define REFRESH_CMD 1
-// Seconds before retrying a failed usage fetch (success uses
-// CONFIG_APP_USAGE_REFRESH_S).
-#define REFRESH_RETRY_S 30
+// Retry cadence after a failed refresh. Pre-flight failures (Wi-Fi still
+// associating) did no radio work, so they retry fast; a real fetch
+// failure pays DNS+TCP+TLS and backs off longer. Success uses
+// CONFIG_APP_USAGE_REFRESH_S.
+#define REFRESH_FAST_RETRY_S 5
+#define REFRESH_SLOW_RETRY_S 60
+
+typedef enum {
+    REFRESH_OK,     // new snapshot stored
+    REFRESH_FAST,   // pre-flight failed; retry soon
+    REFRESH_SLOW,   // fetch or config failed; back off
+} refresh_result_t;
 
 typedef struct {
     bsp_btn_t btn;
@@ -51,25 +61,26 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     (void)xQueueSend(s_input_queue, &input, 0);
 }
 
-static bool do_refresh(void)
+static refresh_result_t do_refresh(void)
 {
-    time_t now = time(NULL);
-    if (CONFIG_APP_OPENCODE_API_KEY[0] == '\0') {
-        usage_store_set_failed("API key not set", now);
-        return false;
-    }
+    // Cheap pre-flight: don't burn a 12 s HTTP timeout while the STA is
+    // still associating.
     if (wifi_mgr_state() != WIFI_MGR_UP) {
-        usage_store_set_failed("Waiting for WiFi", now);
-        return false;
+        usage_store_set_failed("Waiting for WiFi");
+        return REFRESH_FAST;
     }
-    time_sync_start();
     usage_info_t info;
-    if (usage_fetch(&info) == ESP_OK) {
+    esp_err_t err = usage_fetch(&info);
+    if (err == ESP_OK) {
         usage_store_set_ok(&info, time(NULL));
-        return true;
+        return REFRESH_OK;
     }
-    usage_store_set_failed("Fetch failed", time(NULL));
-    return false;
+    // ESP_ERR_INVALID_ARG means the key is unset (usage_client.h); every
+    // other error is an HTTP/TLS failure. Both need config or the network
+    // to change, so they back off.
+    usage_store_set_failed(err == ESP_ERR_INVALID_ARG ? "API key not set"
+                                                      : "Fetch failed");
+    return REFRESH_SLOW;
 }
 
 // Worker: periodic refresh, on-demand refresh, and idle sleep.
@@ -77,31 +88,35 @@ static void worker_task(void *arg)
 {
     (void)arg;
     const int64_t interval_us = (int64_t)CONFIG_APP_USAGE_REFRESH_S * 1000000;
-    // A failed fetch (usually Wi-Fi not ready yet on early boot) retries
-    // soon so the first good snapshot — and the pre-sleep NVS cache that
-    // depends on it — is not delayed by a full refresh interval.
-    const int64_t retry_us = (int64_t)REFRESH_RETRY_S * 1000000;
-    // Wake at least once a minute so the idle deadline is checked even
-    // when the next refresh is far away.
-    const TickType_t tick_cap = pdMS_TO_TICKS(60000);
+    const int64_t fast_retry_us = (int64_t)REFRESH_FAST_RETRY_S * 1000000;
+    const int64_t slow_retry_us = (int64_t)REFRESH_SLOW_RETRY_S * 1000000;
     int64_t next_refresh = esp_timer_get_time() + 5 * 1000000;  // first fetch soon
     for (;;) {
+        // Block until the nearer of the next refresh and the idle
+        // deadline. A button push only moves the deadline later, so a
+        // stale early wake harmlessly recomputes and re-blocks — no
+        // fixed wake cap, and sleep starts within a tick of expiry.
         int64_t now = esp_timer_get_time();
         int64_t wait_us = next_refresh - now;
+        const int64_t idle_left_us =
+            ((int64_t)CONFIG_APP_IDLE_SLEEP_S - power_idle_idle_s()) * 1000000;
+        if (idle_left_us < wait_us) wait_us = idle_left_us;
         if (wait_us < 0) wait_us = 0;
-        TickType_t wait_ticks = pdMS_TO_TICKS((uint32_t)(wait_us / 1000));
-        if (wait_ticks > tick_cap) wait_ticks = tick_cap;
 
         uint32_t cmd = 0;
-        BaseType_t got = xTaskNotifyWait(0, UINT32_MAX, &cmd, wait_ticks);
+        BaseType_t got = xTaskNotifyWait(0, UINT32_MAX, &cmd,
+                                         pdMS_TO_TICKS((uint32_t)(wait_us / 1000)));
         if (power_idle_expired()) {
             power_idle_enter_deep_sleep();
         }
         // Refresh on OK request or when the periodic deadline passed.
         if ((got == pdTRUE && cmd == REFRESH_CMD) ||
             esp_timer_get_time() >= next_refresh) {
-            bool ok = do_refresh();
-            next_refresh = esp_timer_get_time() + (ok ? interval_us : retry_us);
+            refresh_result_t r = do_refresh();
+            int64_t retry_us = r == REFRESH_OK ? interval_us :
+                                 r == REFRESH_FAST ? fast_retry_us :
+                                                     slow_retry_us;
+            next_refresh = esp_timer_get_time() + retry_us;
         }
     }
 }
@@ -132,11 +147,16 @@ void app_main(void)
         ESP_LOGI(TAG, "wakeup cause: %d", wakeup);
     }
 
-    bsp_i2c_init();
-    bsp_i2c_scan();
-    if (bsp_battery_init() != ESP_OK) {
-        ESP_LOGW(TAG, "battery gauge unavailable, continuing without SOC");
+    // NVS once, before any subsystem: usage_store reads its cache and
+    // wifi_mgr needs the calibration data. Best effort, never erase — a
+    // broken NVS only drops the usage cache and Wi-Fi credentials.
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS init failed: %s (not erasing user data)",
+                 esp_err_to_name(err));
     }
+
+    bsp_i2c_init();
 
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
         ESP_LOGE(TAG, "display/LVGL init failed (MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
@@ -182,6 +202,14 @@ void app_main(void)
     } else {
         ESP_LOGE(TAG, "LVGL lock failed, UI not created");
         return;
+    }
+
+    // Gauge init last: it spends ~100 ms of I2C handshakes (worst case
+    // seconds rechecking the battery profile) and the UI renders "--"
+    // until it answers, so it must not sit between power-on and the
+    // first frame or the first refresh.
+    if (bsp_battery_init() != ESP_OK) {
+        ESP_LOGW(TAG, "battery gauge unavailable, continuing without SOC");
     }
 
     ESP_LOGI(TAG, "ready");

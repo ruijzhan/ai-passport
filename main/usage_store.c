@@ -15,7 +15,6 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "nvs_flash.h"
 #include "nvs.h"
 
 static const char *TAG = "usage_store";
@@ -54,7 +53,7 @@ static uint32_t persisted_crc(const usage_persisted_t *p)
     return hash;
 }
 
-static bool persisted_sane(const usage_persisted_t *p)
+static bool persisted_sane(usage_persisted_t *p)
 {
     if (p->magic != USAGE_STORE_MAGIC || p->version != USAGE_STORE_VERSION) {
         return false;
@@ -65,17 +64,15 @@ static bool persisted_sane(const usage_persisted_t *p)
     if (p->fetched_at < 0) {
         return false;
     }
-    const usage_window_t *wins[3] = {
-        &p->info.rolling, &p->info.weekly, &p->info.monthly,
-    };
     bool any_valid = false;
-    for (int i = 0; i < 3; i++) {
-        if (wins[i]->valid) {
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+        const usage_window_t *w = usage_window_at(&p->info, i);
+        if (w->valid) {
             any_valid = true;
-            if (wins[i]->percent < 0 || wins[i]->percent > 100) {
+            if (w->percent < 0 || w->percent > 100) {
                 return false;
             }
-            if (wins[i]->has_reset && wins[i]->resets_at_utc < 0) {
+            if (w->has_reset && w->resets_at_utc < 0) {
                 return false;
             }
         }
@@ -83,21 +80,8 @@ static bool persisted_sane(const usage_persisted_t *p)
     return any_valid;
 }
 
-// Best effort: NVS may be uninitialized here (wifi_mgr starts later), so
-// ensure it before the first load. Never erases on failure; a broken NVS
-// just means "no cache", matching the wifi_mgr no-erase policy.
-static void ensure_nvs(void)
-{
-    esp_err_t err = nvs_flash_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "NVS init failed, cache unavailable: %s",
-                 esp_err_to_name(err));
-    }
-}
-
 static void load_from_nvs(void)
 {
-    ensure_nvs();
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(USAGE_STORE_NS, NVS_READONLY, &handle);
     if (err != ESP_OK) {
@@ -135,8 +119,8 @@ void usage_store_init(void)
 
 void usage_store_set_ok(const usage_info_t *info, time_t now)
 {
-    if (!info || !s_lock) return;
-    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return;
+    if (!info) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     s_snapshot.info = *info;
     s_snapshot.has_data = true;
     s_snapshot.fetched_at = now;
@@ -147,11 +131,9 @@ void usage_store_set_ok(const usage_info_t *info, time_t now)
     // write costs flash wear. usage_store_save() persists on sleep entry.
 }
 
-void usage_store_set_failed(const char *reason, time_t now)
+void usage_store_set_failed(const char *reason)
 {
-    if (!s_lock) return;
-    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return;
-    (void)now;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     s_snapshot.last_failed = true;
     snprintf(s_snapshot.last_error, sizeof(s_snapshot.last_error), "%s",
              reason ? reason : "fetch failed");
@@ -160,17 +142,16 @@ void usage_store_set_failed(const char *reason, time_t now)
 
 void usage_store_get(usage_snapshot_t *out)
 {
-    if (!out || !s_lock) return;
-    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return;
+    if (!out) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     *out = s_snapshot;
     xSemaphoreGive(s_lock);
 }
 
 void usage_store_save(void)
 {
-    if (!s_lock) return;
     usage_snapshot_t copy;
-    if (xSemaphoreTake(s_lock, portMAX_DELAY) != pdTRUE) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     copy = s_snapshot;
     xSemaphoreGive(s_lock);
 
@@ -186,7 +167,6 @@ void usage_store_save(void)
     persisted.fetched_at = (int64_t)copy.fetched_at;
     persisted.crc = persisted_crc(&persisted);
 
-    ensure_nvs();
     nvs_handle_t handle = 0;
     esp_err_t err = nvs_open(USAGE_STORE_NS, NVS_READWRITE, &handle);
     if (err != ESP_OK) {

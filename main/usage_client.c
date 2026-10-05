@@ -18,7 +18,7 @@ esp_err_t usage_fetch(usage_info_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
     const char *key = CONFIG_APP_OPENCODE_API_KEY;
-    if (!key || key[0] == '\0') {
+    if (key[0] == '\0') {
         ESP_LOGW(TAG, "API key not configured");
         return ESP_ERR_INVALID_ARG;
     }

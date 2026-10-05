@@ -6,8 +6,9 @@
 
 int main(void)
 {
-    // Unknown sentinel (matches wifi_mgr_rssi() when not associated).
-    assert(wifi_signal_level(0) == -1);
+    // Unknown RSSI (below any real reading, e.g. wifi_mgr_rssi() when
+    // not associated) lands in the 0-bar bucket.
+    assert(wifi_signal_level(-128) == 0);
 
     // Threshold boundaries.
     assert(wifi_signal_level(-30) == 4);

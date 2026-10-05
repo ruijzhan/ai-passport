@@ -37,15 +37,11 @@ int main(void)
     usage_format_countdown(5000, 4000, buf, sizeof(buf));
     assert(strcmp(buf, "00:00:00") == 0);
 
-    // UTC formatting and time parsing round-trip.
-    usage_format_utc(0, buf, sizeof(buf));
-    assert(strcmp(buf, "1970-01-01 00:00:00") == 0);
+    // Time parsing.
     assert(usage_parse_time("1970-01-01T00:00:00Z") == 0);
     assert(usage_parse_time("not-a-time") < 0);
     assert(usage_parse_time("2026-02-30T00:00:00Z") < 0);
     assert(usage_parse_time("2026-13-01T00:00:00Z") < 0);
-    usage_format_utc(-5, buf, sizeof(buf));
-    assert(strcmp(buf, "--") == 0);
 
     // Degraded inputs leave windows invalid without crashing.
     usage_parse(NULL, &u);
@@ -78,6 +74,25 @@ int main(void)
     assert(usage_month_period_s(usage_parse_time("2026-09-01T00:00:00Z")) ==
            30 * 86400);
     assert(usage_month_period_s(-1) < 0);
+
+    // The window table drives the parser, store validator, and UI rows
+    // in the same order; the accessor maps index -> struct field.
+    assert(USAGE_WINDOW_COUNT == 3);
+    assert(strcmp(USAGE_WINDOWS[0].json_key, "\"rolling\"") == 0);
+    assert(strcmp(USAGE_WINDOWS[1].json_key, "\"weekly\"") == 0);
+    assert(strcmp(USAGE_WINDOWS[2].json_key, "\"monthly\"") == 0);
+    assert(strcmp(USAGE_WINDOWS[0].title, "5H ROLLING") == 0);
+    assert(strcmp(USAGE_WINDOWS[2].title, "MONTHLY") == 0);
+    assert(usage_window_at(&u, 0) == &u.rolling);
+    assert(usage_window_at(&u, 2) == &u.monthly);
+    assert(usage_window_at(&u, USAGE_WINDOW_COUNT) == NULL);
+    assert(usage_window_at(NULL, 0) == NULL);
+    assert(usage_window_period_s(0, 0) == USAGE_ROLLING_PERIOD_S);
+    assert(usage_window_period_s(1, 0) == USAGE_WEEKLY_PERIOD_S);
+    assert(usage_window_period_s(2, usage_parse_time("2026-10-05T12:00:00Z")) ==
+           31 * 86400);
+    assert(usage_window_period_s(2, -1) < 0);
+    assert(usage_window_period_s(USAGE_WINDOW_COUNT, 0) < 0);
 
     // Time progress: elapsed / period.
     assert(usage_time_progress(1000, 1000 + USAGE_ROLLING_PERIOD_S,
