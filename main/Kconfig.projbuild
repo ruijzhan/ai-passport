@@ -19,7 +19,7 @@ menu "OpenCode Go Usage App"
 
     config APP_NTP_SERVER
         string "NTP server for time sync"
-        default "ntp.cloud.aliyuncs.com"
+        default "203.107.6.88"
 
     config APP_TIMEZONE
         string "POSIX timezone for displayed local time"
