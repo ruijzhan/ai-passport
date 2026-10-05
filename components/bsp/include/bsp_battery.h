@@ -14,7 +14,13 @@ esp_err_t bsp_battery_init(void);
 esp_err_t bsp_battery_sleep(void);
 
 // 剩余电量百分比 0..100;读失败返回 -1。
+// 初始化完成 (s_ready) 前一律返回 -1，上层应保留缓存值而不是显示 0%。
 int bsp_battery_soc(void);
+
+// Deep sleep 前 bsp_battery_sleep() 已把最后一次有效 SOC 存入 RTC。
+// 返回缓存值 0..100，无缓存时返回 -1。UI 启动时用它做初始值，芯片
+// 就绪前保持显示缓存而不是 0% 或 "--"。
+int bsp_battery_cached_soc(void);
 
 // 电池电压 mV;读失败返回 -1。
 int bsp_battery_mv(void);
