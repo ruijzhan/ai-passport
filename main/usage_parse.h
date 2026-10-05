@@ -22,6 +22,23 @@ typedef struct {
     usage_window_t monthly;  // billing month
 } usage_info_t;
 
+// The three quota windows in one place, so the parser, the store
+// validator, and the home-screen rows cannot drift apart. Index order is
+// the contract: it matches usage_info_t's fields above.
+#define USAGE_WINDOW_COUNT 3
+typedef struct {
+    const char *json_key;   // quoted key as the scanner expects, e.g. "\"rolling\""
+    const char *title;      // home-screen row title
+} usage_window_desc_t;
+extern const usage_window_desc_t USAGE_WINDOWS[USAGE_WINDOW_COUNT];
+
+// Window i of info (rolling, weekly, monthly); NULL on a bad index.
+usage_window_t *usage_window_at(usage_info_t *info, int i);
+
+// Cycle length of window i at now_utc (monthly follows the calendar
+// month). -1 on a bad index or negative time.
+int64_t usage_window_period_s(int i, int64_t now_utc);
+
 // Parse the body of GET /zen/go/v1/usage. Never fails hard: missing or
 // malformed fields leave the corresponding window invalid.
 void usage_parse(const char *json, usage_info_t *out);
@@ -34,9 +51,6 @@ int64_t usage_parse_time(const char *iso8601);
 // reset_utc < 0 yields "--"; a passed reset yields "00:00:00".
 void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
                             char *buf, size_t len);
-
-// Format an epoch as "YYYY-MM-DD HH:MM:SS" in UTC, "--" when negative.
-void usage_format_utc(int64_t epoch, char *buf, size_t len);
 
 // Fixed cycle lengths, in seconds.
 #define USAGE_ROLLING_PERIOD_S (5 * 3600)

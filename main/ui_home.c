@@ -18,7 +18,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "esp_log.h"
 #include "lvgl.h"
 #include "bsp_battery.h"
 #include "time_sync.h"
@@ -33,6 +32,15 @@
 #define WIFI_BARS_BOTTOM 20
 #define WIFI_BAR_W 6
 #define WIFI_BAR_GAP 3
+// The UI timer ticks at 1 Hz; both sensors are sampled far slower than
+// that because each read is a synchronous bus transaction for a value
+// that changes on a seconds-to-minutes scale.
+#define WIFI_RSSI_SAMPLE_TICKS 10
+#define BATT_SAMPLE_TICKS 30
+
+// Shared geometry for the quota rows and the status line.
+#define CONTENT_W 224
+#define BAR_H 12
 
 // Battery group is right-aligned at x=232: [icon] 4px "87%".
 // Text width is measured at runtime so 8%..100% all hug the icon.
@@ -49,22 +57,26 @@
 #define BATT_LOW_SOC 30
 #define BATT_CRIT_SOC 15
 
-static const char *TAG = "ui_home";
-
 static lv_obj_t *s_scr;
 static lv_obj_t *s_clock;
 static lv_obj_t *s_wifi_bars[WIFI_BARS_COUNT];
 static unsigned s_tick;
-static int s_last_wifi_key = 0x7FFFFFFF;
+// Sampled sensor caches (see WIFI_RSSI_SAMPLE_TICKS/BATT_SAMPLE_TICKS).
+// s_rssi/s_wifi_up resample on a Wi-Fi state transition so bars appear
+// the moment the link comes up; s_soc retries every tick while the
+// gauge has not answered yet (bsp_battery_init may still be running).
+static bool s_wifi_up;
+static int s_rssi = WIFI_MGR_RSSI_UNKNOWN;
+static int s_soc = -1;
 static lv_obj_t *s_date;
 static lv_obj_t *s_batt;
 static lv_obj_t *s_batt_frame;
 static lv_obj_t *s_batt_fill;
 static lv_obj_t *s_batt_tip;
-static lv_obj_t *s_pct[3];
-static lv_obj_t *s_bar[3];
-static lv_obj_t *s_marker[3];
-static lv_obj_t *s_reset[3];
+static lv_obj_t *s_pct[USAGE_WINDOW_COUNT];
+static lv_obj_t *s_bar[USAGE_WINDOW_COUNT];
+static lv_obj_t *s_marker[USAGE_WINDOW_COUNT];
+static lv_obj_t *s_reset[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_status;
 static lv_timer_t *s_timer;
 // Last rendered values; INT_MIN forces the first refresh after create() to
@@ -74,15 +86,9 @@ static int s_last_soc = INT_MIN;
 static int s_last_lit = INT_MIN;
 static bool s_last_weak;
 
-// Pace marker: 2px black line, same height as the 12px bar, centered on
-// the time-progress position so usage-vs-average is directly comparable.
+// Pace marker: 2px black line spanning the bar height, centered on the
+// time-progress position so usage-vs-average is directly comparable.
 #define USAGE_MARKER_W 2
-#define USAGE_MARKER_H 12
-#define USAGE_MARKER_OVERHANG ((USAGE_MARKER_H - 12) / 2)
-
-static const char *const TITLES[3] = {
-    "5H ROLLING", "WEEKLY", "MONTHLY",
-};
 
 static void set_text(lv_obj_t *label, const char *text)
 {
@@ -93,24 +99,10 @@ static void set_text(lv_obj_t *label, const char *text)
     }
 }
 
-static int64_t window_period_s(int i, int64_t now_utc)
-{
-    switch (i) {
-    case 0:
-        return USAGE_ROLLING_PERIOD_S;
-    case 1:
-        return USAGE_WEEKLY_PERIOD_S;
-    case 2:
-        return usage_month_period_s(now_utc);
-    default:
-        return -1;
-    }
-}
-
 static void marker_update(int i, const usage_window_t *w, int64_t now,
                           bool time_ok)
 {
-    if (i < 0 || i >= 3 || !s_marker[i] || !s_bar[i]) {
+    if (i < 0 || i >= USAGE_WINDOW_COUNT || !s_marker[i] || !s_bar[i]) {
         return;
     }
     if (!w->valid || !w->has_reset || !time_ok) {
@@ -118,7 +110,7 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
         return;
     }
     int pct = usage_time_progress(now, w->resets_at_utc,
-                                  window_period_s(i, now));
+                                  usage_window_period_s(i, now));
     if (pct < 0) {
         lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
         return;
@@ -129,8 +121,7 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     lv_coord_t bar_y = lv_obj_get_y(s_bar[i]);
     lv_coord_t bar_w = lv_obj_get_width(s_bar[i]);
     lv_coord_t mx = bar_x + (bar_w * pct) / 100 - USAGE_MARKER_W / 2;
-    lv_coord_t my = bar_y - USAGE_MARKER_OVERHANG;
-    lv_obj_set_pos(s_marker[i], mx, my);
+    lv_obj_set_pos(s_marker[i], mx, bar_y);
 }
 
 static void window_row(int i, const usage_window_t *w, int64_t now,
@@ -219,13 +210,15 @@ static void batt_layout(void)
                    BATT_FRAME_Y + (BATT_FRAME_H - BATT_TIP_H) / 2);
 }
 
+static void ui_home_refresh(void);
+
 static void tick(lv_timer_t *timer)
 {
     (void)timer;
     ui_home_refresh();
 }
 
-void ui_home_refresh(void)
+static void ui_home_refresh(void)
 {
     if (!s_scr) return;
 
@@ -236,12 +229,7 @@ void ui_home_refresh(void)
         snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
                  tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
         set_text(s_clock, buf);
-        static const char *WD[7] = {
-            "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
-        };
-        snprintf(buf, sizeof(buf), "%04d-%02d-%02d %s",
-                 tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
-                 WD[tm_now.tm_wday % 7]);
+        strftime(buf, sizeof(buf), "%Y-%m-%d %a", &tm_now);
         set_text(s_date, buf);
     } else {
         set_text(s_clock, "--:--:--");
@@ -251,35 +239,26 @@ void ui_home_refresh(void)
     char buf[96];
     s_tick++;
     // Top-right shows bars only (no "WiFi" text): lit count = signal
-    // level, red = weak, animated = connecting, all dim = off.
-    int lit = -1;
+    // level, red = weak, animated = connecting, all dim = off. State
+    // transitions (connect/disconnect) are logged by wifi_mgr.
+    int lit = 0;
     bool weak = false;
     switch (wifi_mgr_state()) {
-    case WIFI_MGR_UP: {
-        int rssi = wifi_mgr_rssi();
-        int level = wifi_signal_level(rssi);
-        lit = level;
-        weak = level >= 0 && level <= 1;
-        int key = (WIFI_MGR_UP << 16) | (level + 1);
-        if (key != s_last_wifi_key) {
-            s_last_wifi_key = key;
-            ESP_LOGI(TAG, "wifi up rssi=%d level=%d", rssi, level);
+    case WIFI_MGR_UP:
+        if (!s_wifi_up || s_tick % WIFI_RSSI_SAMPLE_TICKS == 0) {
+            s_wifi_up = true;
+            s_rssi = wifi_mgr_rssi();
         }
+        lit = wifi_signal_level(s_rssi);
+        weak = lit <= 1;
         break;
-    }
     case WIFI_MGR_CONNECTING:
+        s_wifi_up = false;
         lit = wifi_signal_anim_level(s_tick);
-        if (s_last_wifi_key != (int)WIFI_MGR_CONNECTING) {
-            s_last_wifi_key = (int)WIFI_MGR_CONNECTING;
-            ESP_LOGI(TAG, "wifi connecting");
-        }
         break;
     default:
+        s_wifi_up = false;
         lit = 0;
-        if (s_last_wifi_key != (int)WIFI_MGR_DOWN) {
-            s_last_wifi_key = (int)WIFI_MGR_DOWN;
-            ESP_LOGI(TAG, "wifi down");
-        }
         break;
     }
     if (lit != s_last_lit || weak != s_last_weak) {
@@ -288,24 +267,26 @@ void ui_home_refresh(void)
         wifi_bars_set(lit, weak);
     }
 
-    int soc = bsp_battery_soc();
-    if (soc != s_last_soc) {
-        s_last_soc = soc;
-        if (soc >= 0) snprintf(buf, sizeof(buf), "%d%%", soc);
+    if (s_soc < 0 || s_tick % BATT_SAMPLE_TICKS == 0) {
+        int soc = bsp_battery_soc();
+        if (soc >= 0) s_soc = soc;  // keep the last good value on a flaky read
+    }
+    if (s_soc != s_last_soc) {
+        s_last_soc = s_soc;
+        if (s_soc >= 0) snprintf(buf, sizeof(buf), "%d%%", s_soc);
         else snprintf(buf, sizeof(buf), "--");
         set_text(s_batt, buf);
-        batt_icon_set(soc);
+        batt_icon_set(s_soc);
         batt_layout();
     }
 
     usage_snapshot_t snap;
     usage_store_get(&snap);
-    const usage_window_t *wins[3] = {
-        &snap.info.rolling, &snap.info.weekly, &snap.info.monthly
-    };
     int64_t now_utc = (int64_t)now;
     bool time_ok = time_sync_done();
-    for (int i = 0; i < 3; i++) window_row(i, wins[i], now_utc, time_ok);
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+        window_row(i, usage_window_at(&snap.info, i), now_utc, time_ok);
+    }
 
     if (!snap.has_data) {
         set_text(s_status, snap.last_failed ? snap.last_error : "No data yet");
@@ -359,7 +340,9 @@ void ui_home_create(void)
         s_wifi_bars[i] = bar;
     }
     s_tick = 0;
-    s_last_wifi_key = 0x7FFFFFFF;
+    s_wifi_up = false;
+    s_rssi = WIFI_MGR_RSSI_UNKNOWN;
+    s_soc = -1;
     s_last_soc = INT_MIN;
     s_last_lit = INT_MIN;
     s_last_weak = false;
@@ -372,7 +355,6 @@ void ui_home_create(void)
 
     s_batt_frame = lv_obj_create(s_scr);
     lv_obj_set_size(s_batt_frame, BATT_FRAME_W, BATT_FRAME_H);
-    lv_obj_set_pos(s_batt_frame, 150, BATT_FRAME_Y);
     lv_obj_set_style_radius(s_batt_frame, 2, 0);
     lv_obj_set_style_bg_opa(s_batt_frame, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_batt_frame, 1, 0);
@@ -381,8 +363,6 @@ void ui_home_create(void)
 
     s_batt_fill = lv_obj_create(s_scr);
     lv_obj_set_size(s_batt_fill, 0, BATT_FILL_MAX_H);
-    lv_obj_set_pos(s_batt_fill, 150 + BATT_FILL_PAD,
-                   BATT_FRAME_Y + BATT_FILL_PAD);
     lv_obj_set_style_radius(s_batt_fill, 1, 0);
     lv_obj_set_style_border_width(s_batt_fill, 0, 0);
     lv_obj_set_style_bg_color(s_batt_fill,
@@ -390,30 +370,31 @@ void ui_home_create(void)
 
     s_batt_tip = lv_obj_create(s_scr);
     lv_obj_set_size(s_batt_tip, BATT_TIP_W, BATT_TIP_H);
-    lv_obj_set_pos(s_batt_tip, 150 + BATT_FRAME_W + 2,
-                   BATT_FRAME_Y + (BATT_FRAME_H - BATT_TIP_H) / 2);
     lv_obj_set_style_radius(s_batt_tip, 1, 0);
     lv_obj_set_style_border_width(s_batt_tip, 0, 0);
     lv_obj_set_style_bg_color(s_batt_tip,
                               lv_palette_main(LV_PALETTE_GREY), 0);
+    // No explicit positions for the icon parts: the first refresh at the
+    // end of create() runs batt_layout() before the screen can render,
+    // and it owns the group's geometry from then on.
 
     int y = 56;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
         lv_obj_t *title = make_label(s_scr, 8, y, &lv_font_montserrat_14);
-        lv_label_set_text(title, TITLES[i]);
+        lv_label_set_text(title, USAGE_WINDOWS[i].title);
         s_pct[i] = make_label(s_scr, 8, y, &lv_font_montserrat_14);
-        lv_obj_set_width(s_pct[i], 224);
+        lv_obj_set_width(s_pct[i], CONTENT_W);
         lv_obj_set_style_text_align(s_pct[i], LV_TEXT_ALIGN_RIGHT, 0);
 
         s_bar[i] = lv_bar_create(s_scr);
-        lv_obj_set_size(s_bar[i], 224, 12);
+        lv_obj_set_size(s_bar[i], CONTENT_W, BAR_H);
         lv_obj_set_pos(s_bar[i], 8, y + 20);
         lv_bar_set_range(s_bar[i], 0, 100);
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
 
         s_marker[i] = lv_obj_create(s_scr);
-        lv_obj_set_size(s_marker[i], USAGE_MARKER_W, USAGE_MARKER_H);
-        lv_obj_set_pos(s_marker[i], 8, y + 20 - USAGE_MARKER_OVERHANG);
+        lv_obj_set_size(s_marker[i], USAGE_MARKER_W, BAR_H);
+        lv_obj_set_pos(s_marker[i], 8, y + 20);
         lv_obj_set_style_radius(s_marker[i], 0, 0);
         lv_obj_set_style_border_width(s_marker[i], 0, 0);
         lv_obj_set_style_bg_color(s_marker[i], lv_color_black(), 0);
@@ -426,7 +407,7 @@ void ui_home_create(void)
 
     s_status = lv_label_create(s_scr);
     lv_obj_set_pos(s_status, 8, 232);
-    lv_obj_set_width(s_status, 224);
+    lv_obj_set_width(s_status, CONTENT_W);
     lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status,
@@ -453,7 +434,7 @@ void ui_home_destroy(void)
         s_scr = NULL;
         s_clock = s_date = s_batt = s_status = NULL;
         s_batt_frame = s_batt_fill = s_batt_tip = NULL;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
             s_pct[i] = s_bar[i] = s_reset[i] = s_marker[i] = NULL;
         }
         for (int i = 0; i < WIFI_BARS_COUNT; i++) {

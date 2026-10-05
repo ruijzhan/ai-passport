@@ -9,6 +9,3 @@
 void ui_home_create(void);
 // Stop the timer and delete the screen. Call before deep sleep.
 void ui_home_destroy(void);
-// Re-read wifi/time/usage state and update every field. Called by the
-// 1 s timer; other tasks must hold the LVGL lock first.
-void ui_home_refresh(void);

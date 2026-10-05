@@ -1,12 +1,13 @@
-// main/time_sync.h — periodic SNTP sync after Wi-Fi is up.
+// main/time_sync.h — SNTP clock sync once Wi-Fi has an IP address.
 #pragma once
 
 #include <stdbool.h>
 
-// Start SNTP against CONFIG_APP_NTP_SERVER and apply CONFIG_APP_TIMEZONE.
-// Poll mode with SNTP_SYNC_MODE_IMMED and a 15 min re-poll interval.
-// Idempotent; returns quietly when Wi-Fi is not up yet (do_refresh retries
-// after the connection is established).
+// Apply CONFIG_APP_TIMEZONE and arm SNTP against CONFIG_APP_NTP_SERVER.
+// It starts by itself on the first IP_EVENT_STA_GOT_IP (poll mode,
+// SNTP_SYNC_MODE_IMMED, 15 min re-poll), so callers need no ordering
+// knowledge beyond "after wifi_mgr_start() created the event loop".
+// Idempotent.
 void time_sync_start(void);
 // True once the clock holds a plausible UTC value.
 bool time_sync_done(void);
