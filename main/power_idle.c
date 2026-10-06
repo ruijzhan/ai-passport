@@ -2,9 +2,8 @@
 //
 // Terminal shutdown order: wait for all buttons to be released (a LONG
 // press is still held when it fires), then UI teardown plus LCD suspend
-// under a single LVGL lock, then Wi-Fi stop, battery gauge sleep, and
-// shared-I2C pin release. Audio is never initialized by this app, so
-// there is nothing to suspend.
+// under a single LVGL lock, then Wi-Fi stop, audio suspend, battery gauge
+// sleep, and shared-I2C pin release.
 #include "power_idle.h"
 
 #include "driver/gpio.h"
@@ -20,6 +19,7 @@
 #include "bsp_display.h"
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
+#include "alert_beep.h"
 #include "ui_home.h"
 #include "usage_store.h"
 #include "wifi_mgr.h"
@@ -125,6 +125,9 @@ void power_idle_enter_deep_sleep(void)
     }
 
     warn("Wi-Fi stop", wifi_mgr_stop());
+    // Audio shares I2C with the gauge, so it suspends before the bus pins
+    // are released. No-op when no beep ever initialized the codec.
+    alert_beep_prepare_deep_sleep();
     warn("CW2017 suspend", bsp_battery_sleep());
     warn("shared I2C pin release", bsp_i2c_prepare_deep_sleep());
 
