@@ -7,25 +7,30 @@
 //   2026-10-06 TUE   [icon] 87%
 //   ------------------------------     green rule
 //   5H ROLLING                  4%
-//   [========== bar ==========]
-//   RESET IN 02:15:33
+//   [========== tall bar ==========]  (pace marker, no RESET line)
 //   WEEKLY / MONTHLY (same layout)
-//   > SYNC 12S AGO             +----+  mascot
+//
+//                              +----+  mascot
 //                              |    |  8 frames
-//   [ OK REFRESH   HOLD SLEEP ]+----+
+//   1/3 > SYNC 12S AGO         +----+  combined page + status, bottom-left
+//   [ OK REFRESH   HOLD SLEEP ]      footer
 #include "ui_home.h"
 
 #include <ctype.h>
 #include <limits.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include "lvgl.h"
 #include "bsp_battery.h"
+#include "esp_timer.h"
+#include "alert.h"
 #include "pipboy_frames.h"
 #include "time_sync.h"
+#include "ui_pages.h"
 #include "usage_store.h"
 #include "wifi_mgr.h"
 #include "wifi_signal.h"
@@ -57,17 +62,17 @@
 // Shared geometry for the quota rows and the status line.
 #define CONTENT_X 8
 #define CONTENT_W 224
-#define BAR_H 12
+// Tall bars fill the space left by removing the per-window RESET lines
+// (reset times live on the DETAIL page): bar bottom (188+16=204) still
+// clears the mascot viewport top (208) by 4px.
+#define BAR_H 16
+// Overview rhythm: three rows from y=56 in 56px steps.
+#define OVERVIEW_Y0 56
+#define OVERVIEW_DY 56
 
 // Green rule separating the status header from the quota rows.
 #define RULE_Y 48
 #define RULE_H 2
-
-// Status text is capped at x=156 so the animation viewport on the right
-// never overlaps it.
-#define STATUS_X 8
-#define STATUS_Y 232
-#define STATUS_W 148
 
 // Lower-right mascot viewport: green viewfinder brackets tightly around the
 // 52x75 walk-cycle sprite (4px side padding, ~1-2px top/bottom). The bottom
@@ -87,6 +92,31 @@
 #define FOOTER_Y 290
 #define FOOTER_W 224
 #define FOOTER_H 17
+
+// Page indicator "1/3" at the bottom-left above the footer (y=270):
+// left-aligned like the status line; the mascot viewport (x>=172)
+// never overlaps it and it clears the footer (y=290) by ~6px.
+#define PAGE_X CONTENT_X
+#define PAGE_Y 270
+#define PAGE_W 44
+
+// Status text shares the page-indicator row: starts right after "1/3"
+// with an 8px gap, single line with ellipsis so a long error never
+// wraps into the footer. Right edge (164) clears the mascot viewport
+// (x>=172) by 8px.
+#define STATUS_X (PAGE_X + PAGE_W + 8)
+#define STATUS_Y PAGE_Y
+#define STATUS_W (ANIM_X - STATUS_X - 8)
+
+// Detail rows mirror the overview rhythm (56px each from y=56) so the
+// mascot viewport (top y=208) stays clear: title line plus one status
+// line per window.
+#define DETAIL_SUB_DY 18
+
+// System rows: five status lines from y=56 in 24px steps.
+#define SYS_Y0 56
+#define SYS_DY 24
+#define SYS_COUNT 5
 
 // Battery group is right-aligned at x=232: [icon] 4px "87%".
 // Text width is measured at runtime so 8%..100% all hug the icon.
@@ -130,30 +160,48 @@ static int s_soc = -1;
 // 期间保持显示 RTC 缓存。s_zero_streak>0 时下一 tick 立刻重采。
 static int s_zero_streak;
 static lv_obj_t *s_date;
+static lv_obj_t *s_page;
+static lv_obj_t *s_hint;
 static lv_obj_t *s_batt;
 static lv_obj_t *s_batt_frame;
 static lv_obj_t *s_batt_fill;
 static lv_obj_t *s_batt_tip;
+static lv_obj_t *s_title[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_pct[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_bar[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_marker[USAGE_WINDOW_COUNT];
 // -1 unknown, 0 line sits on the dark track, 1 line covered by the fill.
 // Cached so the per-second refresh only touches the style on a real flip.
 static int s_marker_cover[USAGE_WINDOW_COUNT];
-static lv_obj_t *s_reset[USAGE_WINDOW_COUNT];
+static void bar_alert_color(int i, int percent, bool valid);
+static lv_obj_t *s_detail_title[USAGE_WINDOW_COUNT];
+static lv_obj_t *s_detail_sub[USAGE_WINDOW_COUNT];
+static lv_obj_t *s_sys[SYS_COUNT];
 static lv_obj_t *s_status;
 static lv_obj_t *s_sprite;
 static lv_timer_t *s_timer;
 static lv_timer_t *s_anim_timer;
 static unsigned s_anim_frame;
+static ui_page_t s_page_idx;
+static bool s_page_applied;
 // Last rendered values; INT_MIN forces the first refresh after create() to
 // draw. Re-setting an unchanged label/style reallocates LVGL text or
 // invalidates the area, so identical values are skipped.
 static int s_last_soc = INT_MIN;
 static int s_last_lit = INT_MIN;
 static bool s_last_weak;
-// -1 forces the first status write, including its color.
-static int s_status_warn = -1;
+// UINT32_MAX forces the first status write, including its color.
+static uint32_t s_status_color = UINT32_MAX;
+// Per-bar indicator color cache; same sentinel forces the first paint.
+static uint32_t s_bar_color[USAGE_WINDOW_COUNT];
+// Mascot motion cache so the 1 s refresh only touches the timer style
+// on a real state flip. s_mascot_paused also gates lv_timer_resume(),
+// which always pokes the LVGL handler and must not run every tick.
+static int s_mascot_period = -1;
+static int s_mascot_tint = -1;
+static bool s_mascot_paused;
+// Battery voltage cache sampled with the SOC block below.
+static int s_mv = -1;
 
 // Pace marker: 2px line spanning the bar height, centered on the
 // time-progress position so usage-vs-average is directly comparable. It
@@ -183,6 +231,23 @@ static void set_bg_color(lv_obj_t *obj, uint32_t color)
     lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
 }
 
+static void set_hidden(lv_obj_t *obj, bool hidden)
+{
+    if (!obj) return;
+    if (hidden) {
+        lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void objs_set_hidden(lv_obj_t *const *objs, int count, bool hidden)
+{
+    for (int i = 0; i < count; i++) {
+        set_hidden(objs[i], hidden);
+    }
+}
+
 // Create a plain rectangle with no border, padding, or scrolling.
 static lv_obj_t *make_rect(lv_obj_t *parent, int x, int y, int w, int h,
                            uint32_t color)
@@ -207,17 +272,17 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     }
     if (!w->valid || !w->has_reset || !time_ok) {
         s_marker_cover[i] = -1;
-        lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+        set_hidden(s_marker[i], true);
         return;
     }
     int pct = usage_time_progress(now, w->resets_at_utc,
                                   usage_window_period_s(i, now));
     if (pct < 0) {
         s_marker_cover[i] = -1;
-        lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+        set_hidden(s_marker[i], true);
         return;
     }
-    lv_obj_clear_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+    set_hidden(s_marker[i], false);
     // Keep the line above the bar fill/track regardless of sibling order.
     lv_obj_move_foreground(s_marker[i]);
     // Flip the line color so it stays readable: green on the dark track,
@@ -235,35 +300,23 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     lv_obj_set_pos(s_marker[i], mx, bar_y);
 }
 
+// Overview row, called only while the overview page is visible. Shows
+// title + percent + tall bar plus the pace marker; reset times live on
+// the DETAIL page, so there is no per-window countdown here.
 static void window_row(int i, const usage_window_t *w, int64_t now,
                        bool time_ok)
 {
-    char buf[48];
-    bool live_countdown = false;
     if (w->valid) {
+        char buf[16];
         snprintf(buf, sizeof(buf), "%d%%", w->percent);
         set_text(s_pct[i], buf);
         lv_bar_set_value(s_bar[i], w->percent, LV_ANIM_OFF);
-        // Before NTP sync the wall clock is bogus (1970), so a countdown
-        // from cached resets_at_utc would show a huge day count. Keep the
-        // cached percent/bar visible immediately and wait for time sync
-        // before rendering the reset countdown.
-        if (w->has_reset && time_ok) {
-            char cd[24];
-            usage_format_countdown(now, w->resets_at_utc, cd, sizeof(cd));
-            snprintf(buf, sizeof(buf), "RESET IN %s", cd);
-            live_countdown = true;
-        } else {
-            snprintf(buf, sizeof(buf), "RESET --");
-        }
     } else {
         set_text(s_pct[i], "--");
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
-        snprintf(buf, sizeof(buf), "RESET --");
     }
-    set_text(s_reset[i], buf);
-    // Blue marks a live countdown; dim green keeps the idle "--" quiet.
-    set_text_color(s_reset[i], live_countdown ? PIP_BLUE : PIP_DIM);
+    // Ignored percent when invalid: bar_alert_color() reads only the flag.
+    bar_alert_color(i, w->percent, w->valid);
     marker_update(i, w, now, time_ok);
 }
 
@@ -333,6 +386,8 @@ static void tick(lv_timer_t *timer)
 }
 
 // Walk-cycle step: one A8 frame per tick, recolor-supplied by the widget.
+// Paused states (CRIT down, stale fetch) hold the current frame by
+// pausing this timer, so a stopped mascot also stops its wakeups.
 static void anim_tick(lv_timer_t *timer)
 {
     (void)timer;
@@ -341,16 +396,186 @@ static void anim_tick(lv_timer_t *timer)
     lv_image_set_src(s_sprite, PIPBOY_FRAMES[s_anim_frame]);
 }
 
-static void status_set(const char *text, bool warn)
+static void status_set(const char *text, uint32_t color)
 {
     if (!s_status) return;
     const char *current = lv_label_get_text(s_status);
-    if (s_status_warn == (warn ? 1 : 0) && current && strcmp(current, text) == 0) {
+    if (s_status_color == color && current && strcmp(current, text) == 0) {
         return;
     }
-    s_status_warn = warn ? 1 : 0;
-    set_text_color(s_status, warn ? PIP_AMBER : PIP_DIM);
+    s_status_color = color;
+    set_text_color(s_status, color);
     set_text(s_status, text);
+}
+
+// Alert severity to palette accent, indexed by alert_level_t (dense from
+// ALERT_NORMAL). The bar indicators and the status line share it so a
+// palette change is one edit.
+static const uint32_t ALERT_COLOR[ALERT_CRIT + 1] = {
+    PIP_GREEN, PIP_AMBER, PIP_RED,
+};
+
+// mascot_tint_t is a separate axis from alert_level_t (a stale fetch is
+// amber while the level stays NORMAL), so it maps to the palette here
+// rather than through ALERT_COLOR.
+static uint32_t mascot_tint_color(mascot_tint_t tint)
+{
+    switch (tint) {
+    case MASCOT_TINT_AMBER:
+        return PIP_AMBER;
+    case MASCOT_TINT_RED:
+        return PIP_RED;
+    default:
+        return PIP_GREEN;
+    }
+}
+
+// Bar indicator follows the window's own alert level so a nearly-empty
+// quota reads amber/red at a glance. Cached: LVGL style writes
+// invalidate the area even when nothing changed.
+static void bar_alert_color(int i, int percent, bool valid)
+{
+    if (i < 0 || i >= USAGE_WINDOW_COUNT || !s_bar[i]) {
+        return;
+    }
+    uint32_t color = ALERT_COLOR[valid ? alert_level_for_percent(percent)
+                                       : ALERT_NORMAL];
+    if (s_bar_color[i] != color) {
+        s_bar_color[i] = color;
+        lv_obj_set_style_bg_color(s_bar[i], lv_color_hex(color),
+                                  LV_PART_INDICATOR);
+    }
+}
+
+// Toggle all page-owned widgets. Called from page switches and from the
+// 1 s refresh so a missed switch self-heals within a tick.
+static void apply_page_visibility(void)
+{
+    if (!s_scr || s_page_applied) {
+        return;
+    }
+    const bool overview = (s_page_idx == UI_PAGE_OVERVIEW);
+    const bool detail = (s_page_idx == UI_PAGE_DETAIL);
+    const bool sys = (s_page_idx == UI_PAGE_SYS);
+    objs_set_hidden(s_title, USAGE_WINDOW_COUNT, !overview);
+    objs_set_hidden(s_pct, USAGE_WINDOW_COUNT, !overview);
+    objs_set_hidden(s_bar, USAGE_WINDOW_COUNT, !overview);
+    objs_set_hidden(s_detail_title, USAGE_WINDOW_COUNT, !detail);
+    objs_set_hidden(s_detail_sub, USAGE_WINDOW_COUNT, !detail);
+    objs_set_hidden(s_sys, SYS_COUNT, !sys);
+    // Pace markers are owned by marker_update on the overview page;
+    // off-page they stay hidden until the next overview refresh.
+    if (!overview) {
+        objs_set_hidden(s_marker, USAGE_WINDOW_COUNT, true);
+    }
+    s_page_applied = true;
+}
+
+// Detail block: "5H ROLLING  4%" plus "RST 10-06 14:00  02:15:33".
+// Absolute time needs a synced clock; otherwise only the countdown
+// placeholder shows.
+static void detail_row(int i, const usage_window_t *w, int64_t now, bool time_ok)
+{
+    if (i < 0 || i >= USAGE_WINDOW_COUNT) {
+        return;
+    }
+    // 64B covers the worst case "RST <23>  <23>" plus title lines below.
+    char buf[64];
+    if (w && w->valid) {
+        snprintf(buf, sizeof(buf), "%s  %d%%", USAGE_WINDOWS[i].title, w->percent);
+    } else {
+        snprintf(buf, sizeof(buf), "%s  --", USAGE_WINDOWS[i].title);
+    }
+    set_text(s_detail_title[i], buf);
+    if (w && w->valid && w->has_reset && time_ok) {
+        time_t rst = (time_t)w->resets_at_utc;
+        struct tm tm_rst;
+        char when[24] = "--";
+        char cd[24] = "--";
+        if (localtime_r(&rst, &tm_rst)) {
+            snprintf(when, sizeof(when), "%02d-%02d %02d:%02d",
+                     tm_rst.tm_mon + 1, tm_rst.tm_mday,
+                     tm_rst.tm_hour, tm_rst.tm_min);
+        }
+        usage_format_countdown(now, w->resets_at_utc, cd, sizeof(cd));
+        snprintf(buf, sizeof(buf), "RST %s  %s", when, cd);
+    } else {
+        snprintf(buf, sizeof(buf), "RST --");
+    }
+    set_text(s_detail_sub[i], buf);
+}
+
+// "<label> 45S AGO" / "<label> 3M AGO" for the age of snap->fetched_at.
+// The status header and the SYSTEM page share it so the seconds-to-minutes
+// threshold cannot drift between them. Callers must have established a
+// synced clock and a real timestamp.
+static void format_fetch_age(char *buf, size_t len, const char *label,
+                             const usage_snapshot_t *snap, time_t now)
+{
+    long age = (long)(now - snap->fetched_at);
+    if (age < 0) {
+        age = 0;
+    }
+    if (age < 90) {
+        snprintf(buf, len, "%s %ldS AGO", label, age);
+    } else {
+        snprintf(buf, len, "%s %ldM AGO", label, age / 60);
+    }
+}
+
+// System page: radio, power, and freshness in five short lines.
+// Stale/unknown values degrade to "--" instead of numbers.
+static void sys_refresh(const usage_snapshot_t *snap, time_t now, bool time_ok)
+{
+    char buf[48];
+    wifi_mgr_state_t ws = wifi_mgr_state();
+    if (ws == WIFI_MGR_UP) {
+        int rssi = wifi_mgr_rssi();
+        if (rssi == WIFI_MGR_RSSI_UNKNOWN) {
+            snprintf(buf, sizeof(buf), "WIFI UP");
+        } else {
+            snprintf(buf, sizeof(buf), "WIFI UP %dDBM", rssi);
+        }
+    } else if (ws == WIFI_MGR_CONNECTING) {
+        snprintf(buf, sizeof(buf), "WIFI LINKING");
+    } else {
+        snprintf(buf, sizeof(buf), "WIFI OFF");
+    }
+    set_text(s_sys[0], buf);
+
+    const char *ssid = CONFIG_APP_WIFI_SSID;
+    if (ssid && ssid[0]) {
+        snprintf(buf, sizeof(buf), "SSID %.18s", ssid);
+    } else {
+        snprintf(buf, sizeof(buf), "SSID --");
+    }
+    set_text(s_sys[1], buf);
+
+    if (s_soc >= 0 && s_mv > 0) {
+        snprintf(buf, sizeof(buf), "BATT %d%% %dMV", s_soc, s_mv);
+    } else if (s_soc >= 0) {
+        snprintf(buf, sizeof(buf), "BATT %d%%", s_soc);
+    } else {
+        snprintf(buf, sizeof(buf), "BATT --");
+    }
+    set_text(s_sys[2], buf);
+
+    int64_t up_s = esp_timer_get_time() / 1000000;
+    if (up_s < 0) {
+        up_s = 0;
+    }
+    snprintf(buf, sizeof(buf), "UP %02d:%02d:%02d",
+             (int)(up_s / 3600), (int)((up_s % 3600) / 60), (int)(up_s % 60));
+    set_text(s_sys[3], buf);
+
+    if (snap && snap->has_data && time_ok && snap->fetched_at > 0) {
+        format_fetch_age(buf, sizeof(buf), "FETCH", snap, now);
+    } else if (snap && snap->has_data) {
+        snprintf(buf, sizeof(buf), "FETCH CACHED");
+    } else {
+        snprintf(buf, sizeof(buf), "FETCH --");
+    }
+    set_text(s_sys[4], buf);
 }
 
 static void ui_home_refresh(void)
@@ -422,6 +647,15 @@ static void ui_home_refresh(void)
             s_soc = soc;  // keep the last good value on a flaky read
         }
     }
+    // Voltage is a second transaction on the gauge's I2C bus and only the
+    // SYSTEM page shows it, so it samples on the slow battery cadence once
+    // known instead of on every tick that retries the SOC read.
+    if (s_mv <= 0 || s_tick % BATT_SAMPLE_TICKS == 0) {
+        int mv = bsp_battery_mv();
+        if (mv > 0) {
+            s_mv = mv;
+        }
+    }
     if (s_soc != s_last_soc) {
         s_last_soc = s_soc;
         if (s_soc >= 0) snprintf(buf, sizeof(buf), "%d%%", s_soc);
@@ -436,26 +670,77 @@ static void ui_home_refresh(void)
     usage_store_get(&snap);
     int64_t now_utc = (int64_t)now;
     bool time_ok = time_sync_done();
-    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
-        window_row(i, usage_window_at(&snap.info, i), now_utc, time_ok);
+    alert_level_t level = alert_level_for_windows(&snap.info);
+
+    // Page chrome first so a switch paints within one tick.
+    apply_page_visibility();
+    if (s_page) {
+        snprintf(buf, sizeof(buf), "%d/%d", (int)s_page_idx + 1, UI_PAGE_COUNT);
+        set_text(s_page, buf);
     }
 
+    // Only the visible page refreshes its own widgets; ui_home_show_page()
+    // refreshes on a switch, so the hidden pages rebuild then.
+    if (s_page_idx == UI_PAGE_OVERVIEW) {
+        for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+            window_row(i, usage_window_at(&snap.info, i), now_utc, time_ok);
+        }
+    } else if (s_page_idx == UI_PAGE_DETAIL) {
+        for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+            detail_row(i, usage_window_at(&snap.info, i), now_utc, time_ok);
+        }
+    } else {
+        sys_refresh(&snap, now, time_ok);
+    }
+
+    // Idle status text stays dim; an alert or a failed fetch raises it.
+    uint32_t status_color = PIP_DIM;
+    if (level != ALERT_NORMAL) {
+        status_color = ALERT_COLOR[level];
+    } else if (snap.last_failed) {
+        status_color = PIP_AMBER;
+    }
     if (!snap.has_data) {
         snprintf(buf, sizeof(buf), "> %.40s",
                  snap.last_failed ? snap.last_error : "NO DATA YET");
-        status_set(buf, snap.last_failed);
+        status_set(buf, status_color);
     } else if (snap.last_failed) {
         snprintf(buf, sizeof(buf), "> %.32s; CACHED", snap.last_error);
-        status_set(buf, true);
+        status_set(buf, status_color);
     } else if (time_ok && snap.fetched_at > 0) {
-        long age = (long)(now - snap.fetched_at);
-        if (age < 0) age = 0;
-        if (age < 90) snprintf(buf, sizeof(buf), "> SYNC %ldS AGO", age);
-        else snprintf(buf, sizeof(buf), "> SYNC %ldM AGO", age / 60);
-        status_set(buf, false);
+        format_fetch_age(buf, sizeof(buf), "> SYNC", &snap, now);
+        status_set(buf, status_color);
     } else {
         // Cached snapshot restored after wake, fresh fetch pending.
-        status_set("> CACHED DATA", false);
+        status_set("> CACHED DATA", status_color);
+    }
+
+    // Mascot follows the same alert state as the bars and status line.
+    // Only the worker task beeps; the LVGL timer just moves the sprite.
+    // A paused state stops that timer, so a red or stale screen costs no
+    // periodic wakeups to step a frame that never changes.
+    mascot_cfg_t mcfg = mascot_config(level, snap.last_failed);
+    uint32_t tint = mascot_tint_color(mcfg.tint);
+    if (s_sprite && (int)tint != s_mascot_tint) {
+        s_mascot_tint = (int)tint;
+        lv_obj_set_style_image_recolor(s_sprite, lv_color_hex(tint), 0);
+    }
+    if (s_anim_timer) {
+        if (mcfg.paused) {
+            if (!s_mascot_paused) {
+                s_mascot_paused = true;
+                lv_timer_pause(s_anim_timer);
+            }
+        } else {
+            if (s_mascot_paused) {
+                s_mascot_paused = false;
+                lv_timer_resume(s_anim_timer);
+            }
+            if (mcfg.period_ms != s_mascot_period) {
+                s_mascot_period = mcfg.period_ms;
+                lv_timer_set_period(s_anim_timer, (uint32_t)mcfg.period_ms);
+            }
+        }
     }
 }
 
@@ -520,12 +805,27 @@ void ui_home_create(void)
     // 上次休眠前的电量，而不是 0% 或 "--"。冷启动无缓存时仍为 -1。
     s_soc = bsp_battery_cached_soc();
     s_zero_streak = 0;
+    s_mv = -1;
     s_last_soc = INT_MIN;
     s_last_lit = INT_MIN;
     s_last_weak = false;
-    s_status_warn = -1;
+    s_status_color = UINT32_MAX;
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+        s_bar_color[i] = UINT32_MAX;
+    }
+    s_mascot_period = ANIM_FRAME_MS;
+    s_mascot_tint = (int)PIP_GREEN;
+    s_mascot_paused = false;
+    s_page_idx = UI_PAGE_OVERVIEW;
+    s_page_applied = false;
 
     s_date = make_label(s_scr, CONTENT_X, 30, &lv_font_montserrat_14, PIP_DIM);
+    // Page indicator lives at the bottom-left above the footer, shared by
+    // all pages.
+    s_page = make_label(s_scr, PAGE_X, PAGE_Y, &lv_font_montserrat_14, PIP_DIM);
+    lv_obj_set_width(s_page, PAGE_W);
+    lv_obj_set_style_text_align(s_page, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_text(s_page, "1/3");
     // Percent label auto-sizes to its text; batt_layout() pins the
     // whole group to the right edge whenever the SOC changes.
     s_batt = make_label(s_scr, BATT_GROUP_RIGHT - 48, 30,
@@ -556,11 +856,11 @@ void ui_home_create(void)
     // Status header ends at the green rule; quota rows follow below.
     make_rect(s_scr, CONTENT_X, RULE_Y, CONTENT_W, RULE_H, PIP_GREEN);
 
-    int y = 56;
+    int y = OVERVIEW_Y0;
     for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
-        lv_obj_t *title = make_label(s_scr, CONTENT_X, y,
-                                     &lv_font_montserrat_14, PIP_DIM);
-        lv_label_set_text(title, USAGE_WINDOWS[i].title);
+        s_title[i] = make_label(s_scr, CONTENT_X, y,
+                                &lv_font_montserrat_14, PIP_DIM);
+        lv_label_set_text(s_title[i], USAGE_WINDOWS[i].title);
         s_pct[i] = make_label(s_scr, CONTENT_X, y,
                               &lv_font_montserrat_14, PIP_GREEN);
         lv_obj_set_width(s_pct[i], CONTENT_W);
@@ -583,17 +883,36 @@ void ui_home_create(void)
         s_marker[i] = make_rect(s_scr, CONTENT_X, y + 20,
                                 USAGE_MARKER_W, BAR_H, PIP_GREEN);
         s_marker_cover[i] = -1;
-        lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+        set_hidden(s_marker[i], true);
 
-        s_reset[i] = make_label(s_scr, CONTENT_X, y + 36,
-                                &lv_font_montserrat_14, PIP_DIM);
-        y += 58;
+        y += OVERVIEW_DY;
+    }
+
+    // Detail page mirrors the overview rhythm: title plus one status
+    // line per window. Hidden until the DETAIL page is shown.
+    int dy = OVERVIEW_Y0;
+    for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
+        s_detail_title[i] = make_label(s_scr, CONTENT_X, dy,
+                                       &lv_font_montserrat_14, PIP_GREEN);
+        s_detail_sub[i] = make_label(s_scr, CONTENT_X, dy + DETAIL_SUB_DY,
+                                     &lv_font_montserrat_14, PIP_DIM);
+        set_hidden(s_detail_title[i], true);
+        set_hidden(s_detail_sub[i], true);
+        dy += OVERVIEW_DY;
+    }
+
+    // System page: radio, power, and freshness. Hidden until shown.
+    for (int i = 0; i < SYS_COUNT; i++) {
+        s_sys[i] = make_label(s_scr, CONTENT_X, SYS_Y0 + i * SYS_DY,
+                              &lv_font_montserrat_14,
+                              i == 0 ? PIP_GREEN : PIP_DIM);
+        set_hidden(s_sys[i], true);
     }
 
     s_status = lv_label_create(s_scr);
     lv_obj_set_pos(s_status, STATUS_X, STATUS_Y);
     lv_obj_set_width(s_status, STATUS_W);
-    lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(s_status, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(PIP_DIM), 0);
 
@@ -608,11 +927,11 @@ void ui_home_create(void)
     s_anim_frame = 0;
 
     make_rect(s_scr, FOOTER_X, FOOTER_Y, FOOTER_W, FOOTER_H, PIP_DIM);
-    lv_obj_t *hint = make_label(s_scr, FOOTER_X + 2, FOOTER_Y + 1,
-                                &lv_font_montserrat_14, PIP_BG);
-    lv_obj_set_width(hint, FOOTER_W - 4);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(hint, "OK REFRESH    HOLD SLEEP");
+    s_hint = make_label(s_scr, FOOTER_X + 2, FOOTER_Y + 1,
+                        &lv_font_montserrat_14, PIP_BG);
+    lv_obj_set_width(s_hint, FOOTER_W - 4);
+    lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_hint, ui_pages_hint(UI_PAGE_OVERVIEW));
 
     lv_screen_load(s_scr);
     s_timer = lv_timer_create(tick, 1000, NULL);
@@ -633,14 +952,57 @@ void ui_home_destroy(void)
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL;
-        s_clock = s_date = s_batt = s_status = NULL;
+        s_clock = s_date = s_page = s_hint = s_batt = s_status = NULL;
         s_batt_frame = s_batt_fill = s_batt_tip = NULL;
         s_sprite = NULL;
         for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
-            s_pct[i] = s_bar[i] = s_reset[i] = s_marker[i] = NULL;
+            s_title[i] = NULL;
+            s_pct[i] = s_bar[i] = s_marker[i] = NULL;
+            s_detail_title[i] = s_detail_sub[i] = NULL;
+        }
+        for (int i = 0; i < SYS_COUNT; i++) {
+            s_sys[i] = NULL;
         }
         for (int i = 0; i < WIFI_BARS_COUNT; i++) {
             s_wifi_bars[i] = NULL;
         }
+        s_page_idx = UI_PAGE_OVERVIEW;
+        s_page_applied = false;
     }
+}
+
+void ui_home_show_page(ui_page_t page)
+{
+    if (!s_scr) {
+        return;
+    }
+    if (page < 0 || page >= UI_PAGE_COUNT) {
+        page = UI_PAGE_OVERVIEW;
+    }
+    if (page == s_page_idx && s_page_applied) {
+        return;
+    }
+    s_page_idx = page;
+    s_page_applied = false;
+    if (s_hint) {
+        set_text(s_hint, ui_pages_hint(page));
+    }
+    apply_page_visibility();
+    ui_home_refresh();
+}
+
+void ui_home_page_next(void)
+{
+    if (!s_scr) {
+        return;
+    }
+    ui_home_show_page(ui_pages_next(s_page_idx));
+}
+
+void ui_home_page_prev(void)
+{
+    if (!s_scr) {
+        return;
+    }
+    ui_home_show_page(ui_pages_prev(s_page_idx));
 }
