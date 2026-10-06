@@ -1,7 +1,8 @@
 // main/main.c — OpenCode Go usage monitor: quota dashboard with Wi-Fi,
-// NTP clock, 3-minute auto refresh (OK = manual refresh), and deep sleep
-// after 5 idle minutes. Fresh screens; the baseline demo now lives in
-// examples/baseline-demo/ and is not part of this build.
+// NTP clock, 3-minute auto refresh (OK = manual refresh), UP/DOWN page
+// switch, threshold beeps, and deep sleep after 5 idle minutes. Fresh
+// screens; the baseline demo now lives in examples/baseline-demo/ and is
+// not part of this build.
 #include <string.h>
 #include <time.h>
 
@@ -23,6 +24,8 @@
 #include "time_sync.h"
 #include "usage_client.h"
 #include "usage_store.h"
+#include "alert.h"
+#include "alert_beep.h"
 #include "ui_home.h"
 #include "wifi_mgr.h"
 
@@ -83,7 +86,7 @@ static refresh_result_t do_refresh(void)
     return REFRESH_SLOW;
 }
 
-// Worker: periodic refresh, on-demand refresh, and idle sleep.
+// Worker: periodic refresh, on-demand refresh, threshold beeps, and idle sleep.
 static void worker_task(void *arg)
 {
     (void)arg;
@@ -91,6 +94,9 @@ static void worker_task(void *arg)
     const int64_t fast_retry_us = (int64_t)REFRESH_FAST_RETRY_S * 1000000;
     const int64_t slow_retry_us = (int64_t)REFRESH_SLOW_RETRY_S * 1000000;
     int64_t next_refresh = esp_timer_get_time() + 5 * 1000000;  // first fetch soon
+    // Edge-triggered beeps: only a rising threshold plays. Starts at
+    // NORMAL so a reboot into an already-high quota still warns once.
+    alert_level_t last_beep_level = ALERT_NORMAL;
     for (;;) {
         // Block until the nearer of the next refresh and the idle
         // deadline. A button push only moves the deadline later, so a
@@ -117,6 +123,18 @@ static void worker_task(void *arg)
                                  r == REFRESH_FAST ? fast_retry_us :
                                                      slow_retry_us;
             next_refresh = esp_timer_get_time() + retry_us;
+            // Beeps run here in the worker: audio writes block for
+            // hundreds of ms and must stay off the LVGL timer and the
+            // button callback. A falling level re-arms silently.
+            if (r == REFRESH_OK) {
+                usage_snapshot_t snap;
+                usage_store_get(&snap);
+                alert_level_t level = alert_level_for_windows(&snap.info);
+                if (level > last_beep_level && level != ALERT_NORMAL) {
+                    alert_beep_play(level);
+                }
+                last_beep_level = level;
+            }
         }
     }
 }
@@ -135,6 +153,18 @@ static void input_task(void *arg)
             xTaskNotify(s_worker_task, REFRESH_CMD, eSetValueWithOverwrite);
         } else if (input.btn == BSP_BTN_OK && input.event == BSP_BTN_LONG) {
             power_idle_enter_deep_sleep();
+        } else if (input.event == BSP_BTN_CLICK &&
+                   (input.btn == BSP_BTN_UP || input.btn == BSP_BTN_DOWN)) {
+            // Page switch needs the LVGL lock; the input task may block
+            // briefly, unlike the esp_timer button callback that fed it.
+            if (bsp_lvgl_lock(500)) {
+                if (input.btn == BSP_BTN_UP) {
+                    ui_home_page_prev();
+                } else {
+                    ui_home_page_next();
+                }
+                bsp_lvgl_unlock();
+            }
         }
     }
 }
