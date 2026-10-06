@@ -1,17 +1,21 @@
-// main/ui_home.c — see ui_home.h. Layout is 240x320 portrait:
+// main/ui_home.c — see ui_home.h. Mark VI Pip-Boy terminal theme on the
+// 240x320 portrait display: phosphor-green ink on a near-black tube,
+// dim/dark hierarchy, and a walking mascot animation in the lower-right
+// viewport.
 //
 //   14:22:05            [bars]
-//   2026-10-06 Tue   [icon] 87%
-//   ------------------------------
-//   5H ROLLING            4%
-//   [bar]
-//   Reset in 02:15:33
-//   WEEKLY ... / MONTHLY ...
-//   ------------------------------
-//   Updated 12s ago / errors here
-//   OK Refresh
+//   2026-10-06 TUE   [icon] 87%
+//   ------------------------------     green rule
+//   5H ROLLING                  4%
+//   [========== bar ==========]
+//   RESET IN 02:15:33
+//   WEEKLY / MONTHLY (same layout)
+//   > SYNC 12S AGO             +----+  mascot
+//                              |    |  8 frames
+//   [ OK REFRESH   HOLD SLEEP ]+----+
 #include "ui_home.h"
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -20,10 +24,22 @@
 
 #include "lvgl.h"
 #include "bsp_battery.h"
+#include "pipboy_frames.h"
 #include "time_sync.h"
 #include "usage_store.h"
 #include "wifi_mgr.h"
 #include "wifi_signal.h"
+
+// Pip-Boy palette shared with the reference visual language: a near-black
+// tube, bright phosphor green, a dim green for secondary text, a very dark
+// green for tracks/inactive parts, and blue/amber for state accents.
+#define PIP_BG    0x000806
+#define PIP_GREEN 0x00E87B
+#define PIP_DIM   0x087A4B
+#define PIP_DARK  0x063B28
+#define PIP_BLUE  0x35A7FF
+#define PIP_AMBER 0xFFB347
+#define PIP_RED   0xFF4D4D
 
 #define WIFI_BARS_COUNT 4
 // Right edge pulled 8px in from 232: the rounded-corner mask
@@ -39,8 +55,38 @@
 #define BATT_SAMPLE_TICKS 30
 
 // Shared geometry for the quota rows and the status line.
+#define CONTENT_X 8
 #define CONTENT_W 224
 #define BAR_H 12
+
+// Green rule separating the status header from the quota rows.
+#define RULE_Y 48
+#define RULE_H 2
+
+// Status text is capped at x=156 so the animation viewport on the right
+// never overlaps it.
+#define STATUS_X 8
+#define STATUS_Y 232
+#define STATUS_W 148
+
+// Lower-right mascot viewport: green viewfinder brackets tightly around the
+// 52x75 walk-cycle sprite (4px side padding, ~1-2px top/bottom). The bottom
+// edge stops 4px above the footer and the right edge aligns with the rest
+// of the content (x=232). Top edge at y=208 clears the monthly bar
+// (ends y=204) by 4px.
+#define ANIM_X 172
+#define ANIM_Y 208
+#define ANIM_W 60
+#define ANIM_H 78
+#define ANIM_BRACKET_ARM 10
+#define ANIM_BRACKET_T 2
+#define ANIM_FRAME_MS 100
+
+// Dim footer bar with dark text, like the reference terminal footer.
+#define FOOTER_X 8
+#define FOOTER_Y 290
+#define FOOTER_W 224
+#define FOOTER_H 17
 
 // Battery group is right-aligned at x=232: [icon] 4px "87%".
 // Text width is measured at runtime so 8%..100% all hug the icon.
@@ -56,6 +102,17 @@
 #define BATT_FILL_MAX_H (BATT_FRAME_H - 2 * BATT_FILL_PAD)
 #define BATT_LOW_SOC 30
 #define BATT_CRIT_SOC 15
+
+static const lv_image_dsc_t *const PIPBOY_FRAMES[PIPBOY_FRAME_COUNT] = {
+    &pipboy_frame_0,
+    &pipboy_frame_1,
+    &pipboy_frame_2,
+    &pipboy_frame_3,
+    &pipboy_frame_4,
+    &pipboy_frame_5,
+    &pipboy_frame_6,
+    &pipboy_frame_7,
+};
 
 static lv_obj_t *s_scr;
 static lv_obj_t *s_clock;
@@ -80,18 +137,29 @@ static lv_obj_t *s_batt_tip;
 static lv_obj_t *s_pct[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_bar[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_marker[USAGE_WINDOW_COUNT];
+// -1 unknown, 0 line sits on the dark track, 1 line covered by the fill.
+// Cached so the per-second refresh only touches the style on a real flip.
+static int s_marker_cover[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_reset[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_status;
+static lv_obj_t *s_sprite;
 static lv_timer_t *s_timer;
+static lv_timer_t *s_anim_timer;
+static unsigned s_anim_frame;
 // Last rendered values; INT_MIN forces the first refresh after create() to
 // draw. Re-setting an unchanged label/style reallocates LVGL text or
 // invalidates the area, so identical values are skipped.
 static int s_last_soc = INT_MIN;
 static int s_last_lit = INT_MIN;
 static bool s_last_weak;
+// -1 forces the first status write, including its color.
+static int s_status_warn = -1;
 
-// Pace marker: 2px black line spanning the bar height, centered on the
-// time-progress position so usage-vs-average is directly comparable.
+// Pace marker: 2px line spanning the bar height, centered on the
+// time-progress position so usage-vs-average is directly comparable. It
+// flips color to stay readable in the Pip-Boy palette: bright phosphor
+// green while it sits on the dark track, black once the usage fill covers
+// it (black-on-dark would vanish, green-on-green would too).
 #define USAGE_MARKER_W 2
 
 static void set_text(lv_obj_t *label, const char *text)
@@ -103,6 +171,34 @@ static void set_text(lv_obj_t *label, const char *text)
     }
 }
 
+static void set_text_color(lv_obj_t *label, uint32_t color)
+{
+    if (!label) return;
+    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+}
+
+static void set_bg_color(lv_obj_t *obj, uint32_t color)
+{
+    if (!obj) return;
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+}
+
+// Create a plain rectangle with no border, padding, or scrolling.
+static lv_obj_t *make_rect(lv_obj_t *parent, int x, int y, int w, int h,
+                           uint32_t color)
+{
+    lv_obj_t *obj = lv_obj_create(parent);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, w, h);
+    lv_obj_set_style_radius(obj, 0, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+    return obj;
+}
+
 static void marker_update(int i, const usage_window_t *w, int64_t now,
                           bool time_ok)
 {
@@ -110,16 +206,27 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
         return;
     }
     if (!w->valid || !w->has_reset || !time_ok) {
+        s_marker_cover[i] = -1;
         lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
         return;
     }
     int pct = usage_time_progress(now, w->resets_at_utc,
                                   usage_window_period_s(i, now));
     if (pct < 0) {
+        s_marker_cover[i] = -1;
         lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
         return;
     }
     lv_obj_clear_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
+    // Keep the line above the bar fill/track regardless of sibling order.
+    lv_obj_move_foreground(s_marker[i]);
+    // Flip the line color so it stays readable: green on the dark track,
+    // black where the bright fill has already passed it.
+    int covered = (w->percent >= pct) ? 1 : 0;
+    if (s_marker_cover[i] != covered) {
+        s_marker_cover[i] = covered;
+        set_bg_color(s_marker[i], covered ? 0x000000 : PIP_GREEN);
+    }
     // Center the 2px line on the time-progress position.
     lv_coord_t bar_x = lv_obj_get_x(s_bar[i]);
     lv_coord_t bar_y = lv_obj_get_y(s_bar[i]);
@@ -132,6 +239,7 @@ static void window_row(int i, const usage_window_t *w, int64_t now,
                        bool time_ok)
 {
     char buf[48];
+    bool live_countdown = false;
     if (w->valid) {
         snprintf(buf, sizeof(buf), "%d%%", w->percent);
         set_text(s_pct[i], buf);
@@ -143,24 +251,26 @@ static void window_row(int i, const usage_window_t *w, int64_t now,
         if (w->has_reset && time_ok) {
             char cd[24];
             usage_format_countdown(now, w->resets_at_utc, cd, sizeof(cd));
-            snprintf(buf, sizeof(buf), "Reset in %s", cd);
+            snprintf(buf, sizeof(buf), "RESET IN %s", cd);
+            live_countdown = true;
         } else {
-            snprintf(buf, sizeof(buf), "Reset --");
+            snprintf(buf, sizeof(buf), "RESET --");
         }
     } else {
         set_text(s_pct[i], "--");
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
-        snprintf(buf, sizeof(buf), "Reset --");
+        snprintf(buf, sizeof(buf), "RESET --");
     }
     set_text(s_reset[i], buf);
+    // Blue marks a live countdown; dim green keeps the idle "--" quiet.
+    set_text_color(s_reset[i], live_countdown ? PIP_BLUE : PIP_DIM);
     marker_update(i, w, now, time_ok);
 }
 
 static void wifi_bars_set(int lit, bool weak)
 {
-    lv_color_t active = weak ? lv_palette_main(LV_PALETTE_RED) :
-                               lv_palette_main(LV_PALETTE_BLUE);
-    lv_color_t dim = lv_palette_lighten(LV_PALETTE_GREY, 2);
+    lv_color_t active = weak ? lv_color_hex(PIP_AMBER) : lv_color_hex(PIP_GREEN);
+    lv_color_t dim = lv_color_hex(PIP_DARK);
     for (int i = 0; i < WIFI_BARS_COUNT; i++) {
         if (!s_wifi_bars[i]) {
             continue;
@@ -175,22 +285,22 @@ static void batt_icon_set(int soc)
     if (!s_batt_frame || !s_batt_fill || !s_batt_tip) {
         return;
     }
-    lv_color_t fill;
+    uint32_t fill;
     int fill_w = 0;
     if (soc < 0) {
-        fill = lv_palette_lighten(LV_PALETTE_GREY, 2);
+        fill = PIP_DARK;
     } else {
         if (soc < BATT_CRIT_SOC) {
-            fill = lv_palette_main(LV_PALETTE_RED);
+            fill = PIP_RED;
         } else if (soc < BATT_LOW_SOC) {
-            fill = lv_palette_main(LV_PALETTE_AMBER);
+            fill = PIP_AMBER;
         } else {
-            fill = lv_palette_main(LV_PALETTE_GREEN);
+            fill = PIP_GREEN;
         }
         if (soc > 100) soc = 100;
         fill_w = (BATT_FILL_MAX_W * soc) / 100;
     }
-    lv_obj_set_style_bg_color(s_batt_fill, fill, 0);
+    set_bg_color(s_batt_fill, fill);
     lv_obj_set_size(s_batt_fill, fill_w, BATT_FILL_MAX_H);
 }
 
@@ -222,6 +332,27 @@ static void tick(lv_timer_t *timer)
     ui_home_refresh();
 }
 
+// Walk-cycle step: one A8 frame per tick, recolor-supplied by the widget.
+static void anim_tick(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_sprite) return;
+    s_anim_frame = (s_anim_frame + 1) % PIPBOY_FRAME_COUNT;
+    lv_image_set_src(s_sprite, PIPBOY_FRAMES[s_anim_frame]);
+}
+
+static void status_set(const char *text, bool warn)
+{
+    if (!s_status) return;
+    const char *current = lv_label_get_text(s_status);
+    if (s_status_warn == (warn ? 1 : 0) && current && strcmp(current, text) == 0) {
+        return;
+    }
+    s_status_warn = warn ? 1 : 0;
+    set_text_color(s_status, warn ? PIP_AMBER : PIP_DIM);
+    set_text(s_status, text);
+}
+
 static void ui_home_refresh(void)
 {
     if (!s_scr) return;
@@ -234,16 +365,20 @@ static void ui_home_refresh(void)
                  tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
         set_text(s_clock, buf);
         strftime(buf, sizeof(buf), "%Y-%m-%d %a", &tm_now);
+        // Terminals are uppercase; %a follows the C locale's mixed case.
+        for (char *p = buf; *p; p++) {
+            *p = (char)toupper((unsigned char)*p);
+        }
         set_text(s_date, buf);
     } else {
         set_text(s_clock, "--:--:--");
-        set_text(s_date, "Syncing time...");
+        set_text(s_date, "SYNCING TIME...");
     }
 
     char buf[96];
     s_tick++;
     // Top-right shows bars only (no "WiFi" text): lit count = signal
-    // level, red = weak, animated = connecting, all dim = off. State
+    // level, amber = weak, animated = connecting, all dark = off. State
     // transitions (connect/disconnect) are logged by wifi_mgr.
     int lit = 0;
     bool weak = false;
@@ -292,6 +427,7 @@ static void ui_home_refresh(void)
         if (s_soc >= 0) snprintf(buf, sizeof(buf), "%d%%", s_soc);
         else snprintf(buf, sizeof(buf), "--");
         set_text(s_batt, buf);
+        set_text_color(s_batt, s_soc >= 0 ? PIP_GREEN : PIP_DIM);
         batt_icon_set(s_soc);
         batt_layout();
     }
@@ -305,30 +441,51 @@ static void ui_home_refresh(void)
     }
 
     if (!snap.has_data) {
-        set_text(s_status, snap.last_failed ? snap.last_error : "No data yet");
+        snprintf(buf, sizeof(buf), "> %.40s",
+                 snap.last_failed ? snap.last_error : "NO DATA YET");
+        status_set(buf, snap.last_failed);
     } else if (snap.last_failed) {
-        snprintf(buf, sizeof(buf), "Update failed, last data kept: %.48s",
-                 snap.last_error);
-        set_text(s_status, buf);
+        snprintf(buf, sizeof(buf), "> %.32s; CACHED", snap.last_error);
+        status_set(buf, true);
     } else if (time_ok && snap.fetched_at > 0) {
         long age = (long)(now - snap.fetched_at);
         if (age < 0) age = 0;
-        if (age < 90) snprintf(buf, sizeof(buf), "Updated %lds ago", age);
-        else snprintf(buf, sizeof(buf), "Updated %ldm ago", age / 60);
-        set_text(s_status, buf);
+        if (age < 90) snprintf(buf, sizeof(buf), "> SYNC %ldS AGO", age);
+        else snprintf(buf, sizeof(buf), "> SYNC %ldM AGO", age / 60);
+        status_set(buf, false);
     } else {
         // Cached snapshot restored after wake, fresh fetch pending.
-        set_text(s_status, "Cached data");
+        status_set("> CACHED DATA", false);
     }
 }
 
 static lv_obj_t *make_label(lv_obj_t *parent, int x, int y,
-                            const lv_font_t *font)
+                            const lv_font_t *font, uint32_t color)
 {
     lv_obj_t *label = lv_label_create(parent);
     lv_obj_set_pos(label, x, y);
     if (font) lv_obj_set_style_text_font(label, font, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
     return label;
+}
+
+// Four L-shaped viewfinder brackets around the mascot viewport.
+static void anim_brackets(lv_obj_t *parent)
+{
+    const int x = ANIM_X;
+    const int y = ANIM_Y;
+    const int w = ANIM_W;
+    const int h = ANIM_H;
+    const int a = ANIM_BRACKET_ARM;
+    const int t = ANIM_BRACKET_T;
+    make_rect(parent, x, y, a, t, PIP_GREEN);
+    make_rect(parent, x, y, t, a, PIP_GREEN);
+    make_rect(parent, x + w - a, y, a, t, PIP_GREEN);
+    make_rect(parent, x + w - t, y, t, a, PIP_GREEN);
+    make_rect(parent, x, y + h - t, a, t, PIP_GREEN);
+    make_rect(parent, x, y + h - a, t, a, PIP_GREEN);
+    make_rect(parent, x + w - a, y + h - t, a, t, PIP_GREEN);
+    make_rect(parent, x + w - t, y + h - a, t, a, PIP_GREEN);
 }
 
 void ui_home_create(void)
@@ -336,10 +493,12 @@ void ui_home_create(void)
     s_scr = lv_obj_create(NULL);
     lv_obj_set_style_pad_all(s_scr, 0, 0);
     lv_obj_set_style_radius(s_scr, 0, 0);
+    lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_scr, lv_color_hex(PIP_BG), 0);
 
     // Top-left clock is inset past the rounded-corner mask
     // (BSP_LVGL_SCREEN_RADIUS=30 hides x<16 at y=4).
-    s_clock = make_label(s_scr, 18, 4, &lv_font_montserrat_20);
+    s_clock = make_label(s_scr, 18, 4, &lv_font_montserrat_20, PIP_GREEN);
 
     int bars_x0 = WIFI_BARS_RIGHT -
         (WIFI_BARS_COUNT * WIFI_BAR_W + (WIFI_BARS_COUNT - 1) * WIFI_BAR_GAP);
@@ -351,8 +510,7 @@ void ui_home_create(void)
                        WIFI_BARS_BOTTOM - h);
         lv_obj_set_style_radius(bar, 1, 0);
         lv_obj_set_style_border_width(bar, 0, 0);
-        lv_obj_set_style_bg_color(bar,
-                                  lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(PIP_DARK), 0);
         s_wifi_bars[i] = bar;
     }
     s_tick = 0;
@@ -365,80 +523,100 @@ void ui_home_create(void)
     s_last_soc = INT_MIN;
     s_last_lit = INT_MIN;
     s_last_weak = false;
+    s_status_warn = -1;
 
-    s_date = make_label(s_scr, 8, 30, &lv_font_montserrat_14);
+    s_date = make_label(s_scr, CONTENT_X, 30, &lv_font_montserrat_14, PIP_DIM);
     // Percent label auto-sizes to its text; batt_layout() pins the
     // whole group to the right edge whenever the SOC changes.
     s_batt = make_label(s_scr, BATT_GROUP_RIGHT - 48, 30,
-                        &lv_font_montserrat_14);
+                        &lv_font_montserrat_14, PIP_GREEN);
 
     s_batt_frame = lv_obj_create(s_scr);
     lv_obj_set_size(s_batt_frame, BATT_FRAME_W, BATT_FRAME_H);
     lv_obj_set_style_radius(s_batt_frame, 2, 0);
     lv_obj_set_style_bg_opa(s_batt_frame, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_batt_frame, 1, 0);
-    lv_obj_set_style_border_color(s_batt_frame,
-                                  lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_border_color(s_batt_frame, lv_color_hex(PIP_DIM), 0);
 
     s_batt_fill = lv_obj_create(s_scr);
     lv_obj_set_size(s_batt_fill, 0, BATT_FILL_MAX_H);
     lv_obj_set_style_radius(s_batt_fill, 1, 0);
     lv_obj_set_style_border_width(s_batt_fill, 0, 0);
-    lv_obj_set_style_bg_color(s_batt_fill,
-                              lv_palette_main(LV_PALETTE_GREEN), 0);
+    lv_obj_set_style_bg_color(s_batt_fill, lv_color_hex(PIP_DARK), 0);
 
     s_batt_tip = lv_obj_create(s_scr);
     lv_obj_set_size(s_batt_tip, BATT_TIP_W, BATT_TIP_H);
     lv_obj_set_style_radius(s_batt_tip, 1, 0);
     lv_obj_set_style_border_width(s_batt_tip, 0, 0);
-    lv_obj_set_style_bg_color(s_batt_tip,
-                              lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_bg_color(s_batt_tip, lv_color_hex(PIP_DIM), 0);
     // No explicit positions for the icon parts: the first refresh at the
     // end of create() runs batt_layout() before the screen can render,
     // and it owns the group's geometry from then on.
 
+    // Status header ends at the green rule; quota rows follow below.
+    make_rect(s_scr, CONTENT_X, RULE_Y, CONTENT_W, RULE_H, PIP_GREEN);
+
     int y = 56;
     for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
-        lv_obj_t *title = make_label(s_scr, 8, y, &lv_font_montserrat_14);
+        lv_obj_t *title = make_label(s_scr, CONTENT_X, y,
+                                     &lv_font_montserrat_14, PIP_DIM);
         lv_label_set_text(title, USAGE_WINDOWS[i].title);
-        s_pct[i] = make_label(s_scr, 8, y, &lv_font_montserrat_14);
+        s_pct[i] = make_label(s_scr, CONTENT_X, y,
+                              &lv_font_montserrat_14, PIP_GREEN);
         lv_obj_set_width(s_pct[i], CONTENT_W);
         lv_obj_set_style_text_align(s_pct[i], LV_TEXT_ALIGN_RIGHT, 0);
 
         s_bar[i] = lv_bar_create(s_scr);
         lv_obj_set_size(s_bar[i], CONTENT_W, BAR_H);
-        lv_obj_set_pos(s_bar[i], 8, y + 20);
+        lv_obj_set_pos(s_bar[i], CONTENT_X, y + 20);
+        lv_obj_set_style_radius(s_bar[i], 2, LV_PART_MAIN);
+        lv_obj_set_style_border_width(s_bar[i], 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(s_bar[i], lv_color_hex(PIP_GREEN),
+                                      LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_bar[i], lv_color_hex(PIP_DARK), LV_PART_MAIN);
+        lv_obj_set_style_radius(s_bar[i], 2, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(s_bar[i], lv_color_hex(PIP_GREEN),
+                                  LV_PART_INDICATOR);
         lv_bar_set_range(s_bar[i], 0, 100);
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
 
-        s_marker[i] = lv_obj_create(s_scr);
-        lv_obj_set_size(s_marker[i], USAGE_MARKER_W, BAR_H);
-        lv_obj_set_pos(s_marker[i], 8, y + 20);
-        lv_obj_set_style_radius(s_marker[i], 0, 0);
-        lv_obj_set_style_border_width(s_marker[i], 0, 0);
-        lv_obj_set_style_bg_color(s_marker[i], lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(s_marker[i], LV_OPA_COVER, 0);
+        s_marker[i] = make_rect(s_scr, CONTENT_X, y + 20,
+                                USAGE_MARKER_W, BAR_H, PIP_GREEN);
+        s_marker_cover[i] = -1;
         lv_obj_add_flag(s_marker[i], LV_OBJ_FLAG_HIDDEN);
 
-        s_reset[i] = make_label(s_scr, 8, y + 36, &lv_font_montserrat_14);
+        s_reset[i] = make_label(s_scr, CONTENT_X, y + 36,
+                                &lv_font_montserrat_14, PIP_DIM);
         y += 58;
     }
 
     s_status = lv_label_create(s_scr);
-    lv_obj_set_pos(s_status, 8, 232);
-    lv_obj_set_width(s_status, CONTENT_W);
+    lv_obj_set_pos(s_status, STATUS_X, STATUS_Y);
+    lv_obj_set_width(s_status, STATUS_W);
     lv_label_set_long_mode(s_status, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_status,
-                               lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_text_color(s_status, lv_color_hex(PIP_DIM), 0);
 
-    lv_obj_t *hint = make_label(s_scr, 8, 292, &lv_font_montserrat_14);
-    lv_obj_set_style_text_color(hint,
-                               lv_palette_main(LV_PALETTE_GREY), 0);
-    lv_label_set_text(hint, "OK Refresh  OK-hold Sleep");
+    anim_brackets(s_scr);
+    s_sprite = lv_image_create(s_scr);
+    lv_image_set_src(s_sprite, PIPBOY_FRAMES[0]);
+    lv_obj_set_pos(s_sprite,
+                   ANIM_X + (ANIM_W - PIPBOY_FRAME_WIDTH) / 2,
+                   ANIM_Y + (ANIM_H - PIPBOY_FRAME_HEIGHT) / 2);
+    lv_obj_set_style_image_recolor(s_sprite, lv_color_hex(PIP_GREEN), 0);
+    lv_obj_set_style_image_recolor_opa(s_sprite, LV_OPA_COVER, 0);
+    s_anim_frame = 0;
+
+    make_rect(s_scr, FOOTER_X, FOOTER_Y, FOOTER_W, FOOTER_H, PIP_DIM);
+    lv_obj_t *hint = make_label(s_scr, FOOTER_X + 2, FOOTER_Y + 1,
+                                &lv_font_montserrat_14, PIP_BG);
+    lv_obj_set_width(hint, FOOTER_W - 4);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(hint, "OK REFRESH    HOLD SLEEP");
 
     lv_screen_load(s_scr);
     s_timer = lv_timer_create(tick, 1000, NULL);
+    s_anim_timer = lv_timer_create(anim_tick, ANIM_FRAME_MS, NULL);
     ui_home_refresh();
 }
 
@@ -448,11 +626,16 @@ void ui_home_destroy(void)
         lv_timer_delete(s_timer);
         s_timer = NULL;
     }
+    if (s_anim_timer) {
+        lv_timer_delete(s_anim_timer);
+        s_anim_timer = NULL;
+    }
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL;
         s_clock = s_date = s_batt = s_status = NULL;
         s_batt_frame = s_batt_fill = s_batt_tip = NULL;
+        s_sprite = NULL;
         for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
             s_pct[i] = s_bar[i] = s_reset[i] = s_marker[i] = NULL;
         }

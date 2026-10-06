@@ -7,6 +7,7 @@ idf_component_register(
          "wifi_signal.c"
          "time_sync.c"
          "ui_home.c"
+         "pipboy_frames.c"
          "power_idle.c"
     INCLUDE_DIRS "."
     REQUIRES bsp driver esp_event esp_http_client esp_hw_support esp_netif
