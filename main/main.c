@@ -66,7 +66,7 @@ static refresh_result_t do_refresh(void)
     // Cheap pre-flight: don't burn a 12 s HTTP timeout while the STA is
     // still associating.
     if (wifi_mgr_state() != WIFI_MGR_UP) {
-        usage_store_set_failed("Waiting for WiFi");
+        usage_store_set_failed("WAITING FOR WIFI");
         return REFRESH_FAST;
     }
     usage_info_t info;
@@ -78,8 +78,8 @@ static refresh_result_t do_refresh(void)
     // ESP_ERR_INVALID_ARG means the key is unset (usage_client.h); every
     // other error is an HTTP/TLS failure. Both need config or the network
     // to change, so they back off.
-    usage_store_set_failed(err == ESP_ERR_INVALID_ARG ? "API key not set"
-                                                      : "Fetch failed");
+    usage_store_set_failed(err == ESP_ERR_INVALID_ARG ? "API KEY NOT SET"
+                                                      : "FETCH FAILED");
     return REFRESH_SLOW;
 }
 
