@@ -7,6 +7,7 @@
 #include "power_idle.h"
 
 #include "driver/gpio.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -20,6 +21,7 @@
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "alert_beep.h"
+#include "power_charge.h"  // pure policy; sampling/cadence owned here
 #include "ui_home.h"
 #include "usage_store.h"
 #include "wifi_mgr.h"
@@ -48,6 +50,30 @@ int64_t power_idle_idle_s(void)
 bool power_idle_expired(void)
 {
     return power_idle_idle_s() >= CONFIG_APP_IDLE_SLEEP_S;
+}
+
+// Charge-inhibit sampling. Called from the worker task (the same task that
+// gates idle sleep), so s_charge needs no lock. Each call costs two short
+// I2C reads and runs at most once per worker-loop wake (minutes scale),
+// plus one register read for the USB SOF status.
+static power_charge_t s_charge;  // zero-initialized: count == 0 is the empty state
+static bool s_charge_logged;     // edge-triggered log: spam-free steady state
+
+bool power_idle_charge_inhibited(void)
+{
+    bool usb = usb_serial_jtag_is_connected();
+    int soc = bsp_battery_soc();
+    int mv = bsp_battery_mv();
+    power_charge_push(&s_charge, esp_timer_get_time() / 1000000, mv);
+    bool inhibit = power_charge_inhibit(usb, soc, &s_charge);
+    // Log once per inhibit episode; the next worker wake re-evaluates from
+    // fresh data, so a single noisy read only delays sleep by one wake.
+    if (inhibit && !s_charge_logged) {
+        ESP_LOGI(TAG, "idle sleep inhibited: usb=%d soc=%d rising=%d",
+                 usb, soc, (int)power_charge_rising(&s_charge));
+    }
+    s_charge_logged = inhibit;
+    return inhibit;
 }
 
 static void warn(const char *step, esp_err_t err)

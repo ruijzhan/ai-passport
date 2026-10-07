@@ -28,6 +28,11 @@ alert_level_t alert_level_for_percent(int percent);
 // the non-const parameter matches usage_window_at().
 alert_level_t alert_level_for_windows(usage_info_t *info);
 
+// Normal walk-cycle frame step. main/ui_home.c creates its animation timer
+// with this, so the timer period and the cached period can never disagree
+// with mascot_config(ALERT_NORMAL, false).
+#define MASCOT_WALK_MS 100
+
 typedef enum {
     MASCOT_TINT_GREEN = 0,
     MASCOT_TINT_AMBER,

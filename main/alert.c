@@ -1,7 +1,6 @@
 // main/alert.c — see alert.h.
 #include "alert.h"
 
-#define MASCOT_WALK_MS 100
 #define MASCOT_RUN_MS 70
 
 alert_level_t alert_level_for_percent(int percent)

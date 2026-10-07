@@ -70,13 +70,6 @@ static void beep_tone(int freq_hz, int ms)
     }
 }
 
-static void beep_gap(int ms)
-{
-    if (ms > 0) {
-        vTaskDelay(pdMS_TO_TICKS(ms));
-    }
-}
-
 void alert_beep_play(alert_level_t level)
 {
     if (level == ALERT_NORMAL) {
@@ -89,7 +82,7 @@ void alert_beep_play(alert_level_t level)
         beep_tone(880, 200);
     } else {
         beep_tone(660, 150);
-        beep_gap(80);
+        vTaskDelay(pdMS_TO_TICKS(80));
         beep_tone(660, 150);
     }
 }
