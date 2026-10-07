@@ -85,7 +85,7 @@
 #define ANIM_H 78
 #define ANIM_BRACKET_ARM 10
 #define ANIM_BRACKET_T 2
-#define ANIM_FRAME_MS 100
+#define ANIM_FRAME_MS MASCOT_WALK_MS
 
 // Dim footer bar with dark text, like the reference terminal footer.
 #define FOOTER_X 8
@@ -183,7 +183,6 @@ static lv_timer_t *s_timer;
 static lv_timer_t *s_anim_timer;
 static unsigned s_anim_frame;
 static ui_page_t s_page_idx;
-static bool s_page_applied;
 // Last rendered values; INT_MIN forces the first refresh after create() to
 // draw. Re-setting an unchanged label/style reallocates LVGL text or
 // invalidates the area, so identical values are skipped.
@@ -447,11 +446,12 @@ static void bar_alert_color(int i, int percent, bool valid)
     }
 }
 
-// Toggle all page-owned widgets. Called from page switches and from the
-// 1 s refresh so a missed switch self-heals within a tick.
+// Toggle all page-owned widgets. Called from every 1 s refresh, so a
+// missed switch self-heals within a tick. Each call is cheap: lv_obj_add_flag
+// and lv_obj_clear_flag return early when the flag already matches.
 static void apply_page_visibility(void)
 {
-    if (!s_scr || s_page_applied) {
+    if (!s_scr) {
         return;
     }
     const bool overview = (s_page_idx == UI_PAGE_OVERVIEW);
@@ -468,7 +468,6 @@ static void apply_page_visibility(void)
     if (!overview) {
         objs_set_hidden(s_marker, USAGE_WINDOW_COUNT, true);
     }
-    s_page_applied = true;
 }
 
 // Detail block: "5H ROLLING  4%" plus "RST 10-06 14:00  02:15:33".
@@ -524,17 +523,19 @@ static void format_fetch_age(char *buf, size_t len, const char *label,
 }
 
 // System page: radio, power, and freshness in five short lines.
-// Stale/unknown values degrade to "--" instead of numbers.
-static void sys_refresh(const usage_snapshot_t *snap, time_t now, bool time_ok)
+// Stale/unknown values degrade to "--" instead of numbers. The radio
+// fields read the caches ui_home_refresh() just updated rather than
+// re-querying the Wi-Fi stack, which the sampling policy at the top of
+// this file deliberately keeps off the 1 Hz path.
+static void sys_refresh(wifi_mgr_state_t ws, const usage_snapshot_t *snap,
+                        time_t now, bool time_ok)
 {
     char buf[48];
-    wifi_mgr_state_t ws = wifi_mgr_state();
     if (ws == WIFI_MGR_UP) {
-        int rssi = wifi_mgr_rssi();
-        if (rssi == WIFI_MGR_RSSI_UNKNOWN) {
+        if (s_rssi == WIFI_MGR_RSSI_UNKNOWN) {
             snprintf(buf, sizeof(buf), "WIFI UP");
         } else {
-            snprintf(buf, sizeof(buf), "WIFI UP %dDBM", rssi);
+            snprintf(buf, sizeof(buf), "WIFI UP %dDBM", s_rssi);
         }
     } else if (ws == WIFI_MGR_CONNECTING) {
         snprintf(buf, sizeof(buf), "WIFI LINKING");
@@ -607,7 +608,8 @@ static void ui_home_refresh(void)
     // transitions (connect/disconnect) are logged by wifi_mgr.
     int lit = 0;
     bool weak = false;
-    switch (wifi_mgr_state()) {
+    wifi_mgr_state_t ws = wifi_mgr_state();
+    switch (ws) {
     case WIFI_MGR_UP:
         if (!s_wifi_up || s_tick % WIFI_RSSI_SAMPLE_TICKS == 0) {
             s_wifi_up = true;
@@ -674,10 +676,8 @@ static void ui_home_refresh(void)
 
     // Page chrome first so a switch paints within one tick.
     apply_page_visibility();
-    if (s_page) {
-        snprintf(buf, sizeof(buf), "%d/%d", (int)s_page_idx + 1, UI_PAGE_COUNT);
-        set_text(s_page, buf);
-    }
+    snprintf(buf, sizeof(buf), "%d/%d", (int)s_page_idx + 1, UI_PAGE_COUNT);
+    set_text(s_page, buf);
 
     // Only the visible page refreshes its own widgets; ui_home_show_page()
     // refreshes on a switch, so the hidden pages rebuild then.
@@ -690,7 +690,7 @@ static void ui_home_refresh(void)
             detail_row(i, usage_window_at(&snap.info, i), now_utc, time_ok);
         }
     } else {
-        sys_refresh(&snap, now, time_ok);
+        sys_refresh(ws, &snap, now, time_ok);
     }
 
     // Idle status text stays dim; an alert or a failed fetch raises it.
@@ -817,7 +817,6 @@ void ui_home_create(void)
     s_mascot_tint = (int)PIP_GREEN;
     s_mascot_paused = false;
     s_page_idx = UI_PAGE_OVERVIEW;
-    s_page_applied = false;
 
     s_date = make_label(s_scr, CONTENT_X, 30, &lv_font_montserrat_14, PIP_DIM);
     // Page indicator lives at the bottom-left above the footer, shared by
@@ -825,7 +824,8 @@ void ui_home_create(void)
     s_page = make_label(s_scr, PAGE_X, PAGE_Y, &lv_font_montserrat_14, PIP_DIM);
     lv_obj_set_width(s_page, PAGE_W);
     lv_obj_set_style_text_align(s_page, LV_TEXT_ALIGN_LEFT, 0);
-    lv_label_set_text(s_page, "1/3");
+    // No initial text: the ui_home_refresh() at the end of create() writes
+    // "%d/%d" from s_page_idx and UI_PAGE_COUNT before the first render.
     // Percent label auto-sizes to its text; batt_layout() pins the
     // whole group to the right edge whenever the SOC changes.
     s_batt = make_label(s_scr, BATT_GROUP_RIGHT - 48, 30,
@@ -967,7 +967,6 @@ void ui_home_destroy(void)
             s_wifi_bars[i] = NULL;
         }
         s_page_idx = UI_PAGE_OVERVIEW;
-        s_page_applied = false;
     }
 }
 
@@ -979,30 +978,21 @@ void ui_home_show_page(ui_page_t page)
     if (page < 0 || page >= UI_PAGE_COUNT) {
         page = UI_PAGE_OVERVIEW;
     }
-    if (page == s_page_idx && s_page_applied) {
+    if (page == s_page_idx) {
         return;
     }
     s_page_idx = page;
-    s_page_applied = false;
-    if (s_hint) {
-        set_text(s_hint, ui_pages_hint(page));
-    }
-    apply_page_visibility();
+    set_text(s_hint, ui_pages_hint(page));
+    // Refresh applies the page's widget visibility before rendering it.
     ui_home_refresh();
 }
 
 void ui_home_page_next(void)
 {
-    if (!s_scr) {
-        return;
-    }
     ui_home_show_page(ui_pages_next(s_page_idx));
 }
 
 void ui_home_page_prev(void)
 {
-    if (!s_scr) {
-        return;
-    }
     ui_home_show_page(ui_pages_prev(s_page_idx));
 }

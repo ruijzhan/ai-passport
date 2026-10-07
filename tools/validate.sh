@@ -45,6 +45,10 @@ run_static_checks() {
         -o "${test_dir}/test_ui_pages"
     "${test_dir}/test_ui_pages"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_power_charge.c main/power_charge.c \
+        -o "${test_dir}/test_power_charge"
+    "${test_dir}/test_power_charge"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_alert.c main/alert.c main/usage_parse.c \
         -o "${test_dir}/test_alert"
     "${test_dir}/test_alert"

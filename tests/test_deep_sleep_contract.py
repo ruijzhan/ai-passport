@@ -196,6 +196,23 @@ class AppSleepContractTest(unittest.TestCase):
         self.assertLess(body.index("gpio_input_enable(GPIO_NUM_0)"),
                         body.index("esp_deep_sleep_enable_gpio_wakeup"))
 
+    def test_charge_inhibit_gates_only_idle_expiry(self) -> None:
+        # Charge signals (USB/SOC/slope) must gate the automatic idle path
+        # only; the manual OK long-press in input_task sleeps directly.
+        worker = function_body(read("main/main.c"), "worker_task")
+        self.assertIn("power_idle_expired()", worker)
+        self.assertIn("power_idle_charge_inhibited()", worker)
+        input_task = function_body(read("main/main.c"), "input_task")
+        long_press = input_task[input_task.index("BSP_BTN_LONG"):]
+        self.assertIn("power_idle_enter_deep_sleep()", long_press)
+        self.assertNotIn("power_idle_charge_inhibited", long_press)
+
+    def test_charge_inhibit_never_sleeps_from_sampler(self) -> None:
+        # The sampler answers "inhibit or not"; the sleep entry itself must
+        # not call back into the sampler (recursion/lock risk).
+        body = function_body(self.idle, "power_idle_charge_inhibited")
+        self.assertNotIn("power_idle_enter_deep_sleep", body)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,21 +98,32 @@ static void worker_task(void *arg)
     // NORMAL so a reboot into an already-high quota still warns once.
     alert_level_t last_beep_level = ALERT_NORMAL;
     for (;;) {
+        // Sample charge state once per wake (minutes scale, so the
+        // voltage-slope history is warm by the time the idle deadline
+        // expires). Only the idle path is gated; OK long-press in
+        // input_task still sleeps unconditionally.
+        bool charge_inhibited = power_idle_charge_inhibited();
         // Block until the nearer of the next refresh and the idle
-        // deadline. A button push only moves the deadline later, so a
-        // stale early wake harmlessly recomputes and re-blocks — no
-        // fixed wake cap, and sleep starts within a tick of expiry.
+        // deadline. While a charge signal inhibits sleep the idle deadline
+        // cannot end the wait — clamping to it would collapse the wait to
+        // 0 and spin this task (and its two gauge reads) at full speed — so
+        // the refresh deadline paces the re-check instead. A button push
+        // only moves the deadline later, so a stale early wake harmlessly
+        // recomputes and re-blocks: no fixed wake cap, and sleep starts
+        // within a tick of expiry whenever nothing inhibits it.
         int64_t now = esp_timer_get_time();
         int64_t wait_us = next_refresh - now;
-        const int64_t idle_left_us =
-            ((int64_t)CONFIG_APP_IDLE_SLEEP_S - power_idle_idle_s()) * 1000000;
-        if (idle_left_us < wait_us) wait_us = idle_left_us;
+        if (!charge_inhibited) {
+            const int64_t idle_left_us =
+                ((int64_t)CONFIG_APP_IDLE_SLEEP_S - power_idle_idle_s()) * 1000000;
+            if (idle_left_us < wait_us) wait_us = idle_left_us;
+        }
         if (wait_us < 0) wait_us = 0;
 
         uint32_t cmd = 0;
         BaseType_t got = xTaskNotifyWait(0, UINT32_MAX, &cmd,
                                          pdMS_TO_TICKS((uint32_t)(wait_us / 1000)));
-        if (power_idle_expired()) {
+        if (power_idle_expired() && !charge_inhibited) {
             power_idle_enter_deep_sleep();
         }
         // Refresh on OK request or when the periodic deadline passed.
@@ -130,7 +141,7 @@ static void worker_task(void *arg)
                 usage_snapshot_t snap;
                 usage_store_get(&snap);
                 alert_level_t level = alert_level_for_windows(&snap.info);
-                if (level > last_beep_level && level != ALERT_NORMAL) {
+                if (level > last_beep_level) {
                     alert_beep_play(level);
                 }
                 last_beep_level = level;
