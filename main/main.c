@@ -1,6 +1,7 @@
 // main/main.c — OpenCode Go usage monitor: quota dashboard with Wi-Fi,
 // NTP clock, 3-minute auto refresh (OK = manual refresh), UP/DOWN page
-// switch, threshold beeps, and deep sleep after 5 idle minutes. Fresh
+// switch, threshold beeps, and deep sleep after 5 idle minutes (full
+// backlight while a charge signal keeps the device awake). Fresh
 // screens; the baseline demo now lives in examples/baseline-demo/ and is
 // not part of this build.
 #include <string.h>
@@ -39,6 +40,10 @@ static const char *TAG = "opencode_go";
 // CONFIG_APP_USAGE_REFRESH_S.
 #define REFRESH_FAST_RETRY_S 5
 #define REFRESH_SLOW_RETRY_S 60
+// Backlight levels (%): dim normally; full while a charge signal inhibits
+// automatic sleep, so the state keeping the device awake is visible.
+#define BACKLIGHT_IDLE_PCT 10
+#define BACKLIGHT_FULL_PCT 100
 
 typedef enum {
     REFRESH_OK,     // new snapshot stored
@@ -54,6 +59,7 @@ typedef struct {
 static QueueHandle_t s_input_queue;
 static TaskHandle_t s_worker_task;
 static volatile bool s_input_ready;
+static bool s_backlight_full;  // worker's last applied backlight state
 
 // Button callbacks run on the shared esp_timer task: enqueue only.
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
@@ -103,6 +109,14 @@ static void worker_task(void *arg)
         // expires). Only the idle path is gated; OK long-press in
         // input_task still sleeps unconditionally.
         bool charge_inhibited = power_idle_charge_inhibited();
+        // Mirror the charge-inhibit state on the panel: full brightness
+        // while a charge signal keeps the device awake, dim otherwise.
+        // Edge-triggered; worker wakes are minutes apart.
+        if (charge_inhibited != s_backlight_full) {
+            bsp_display_backlight(charge_inhibited ? BACKLIGHT_FULL_PCT
+                                                   : BACKLIGHT_IDLE_PCT);
+            s_backlight_full = charge_inhibited;
+        }
         // Block until the nearer of the next refresh and the idle
         // deadline. While a charge signal inhibits sleep the idle deadline
         // cannot end the wait — clamping to it would collapse the wait to
@@ -204,7 +218,7 @@ void app_main(void)
                  BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
         return;
     }
-    bsp_display_backlight(10);
+    bsp_display_backlight(BACKLIGHT_IDLE_PCT);
 
     usage_store_init();
     power_idle_init();
