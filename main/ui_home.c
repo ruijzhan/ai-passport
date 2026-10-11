@@ -282,8 +282,12 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
         return;
     }
     set_hidden(s_marker[i], false);
-    // Keep the line above the bar fill/track regardless of sibling order.
-    lv_obj_move_foreground(s_marker[i]);
+    // No sibling reorder here: the marker is created right after its bar
+    // (see ui_home_create), so it already draws above the track and the
+    // fill indicator. lv_obj_move_foreground() moves the child in its
+    // parent and calls lv_obj_invalidate(parent) — parent is the screen,
+    // so doing it on every 1 s refresh forced a full-screen repaint that
+    // hitched the mascot animation once per second.
     // Flip the line color so it stays readable: green on the dark track,
     // black where the bright fill has already passed it.
     int covered = (w->percent >= pct) ? 1 : 0;
@@ -291,11 +295,22 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
         s_marker_cover[i] = covered;
         set_bg_color(s_marker[i], covered ? 0x000000 : PIP_GREEN);
     }
-    // Center the 2px line on the time-progress position.
+    // Center the 2px line on the time-progress position, then keep it
+    // inside the bar's 1px border. At pct 0 the unclamped x is bar_x - 1
+    // and at pct 100 it lands on the right border, so an end position
+    // would paint over and blank the vertical border line (the marker is
+    // black once the fill covers it), leaving a notch in the outline.
     lv_coord_t bar_x = lv_obj_get_x(s_bar[i]);
     lv_coord_t bar_y = lv_obj_get_y(s_bar[i]);
     lv_coord_t bar_w = lv_obj_get_width(s_bar[i]);
     lv_coord_t mx = bar_x + (bar_w * pct) / 100 - USAGE_MARKER_W / 2;
+    lv_coord_t mx_min = bar_x + 1;
+    lv_coord_t mx_max = bar_x + bar_w - 1 - USAGE_MARKER_W;
+    if (mx < mx_min) {
+        mx = mx_min;
+    } else if (mx > mx_max) {
+        mx = mx_max;
+    }
     lv_obj_set_pos(s_marker[i], mx, bar_y);
 }
 
