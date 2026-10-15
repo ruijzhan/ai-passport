@@ -65,6 +65,18 @@ static bool s_backlight_full;  // worker's last applied backlight state
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 {
     (void)user;
+    // Consume the guard before the readiness check: a release can arrive after the
+    // post-init voltage sample but before input dispatch is ready, and dropping it
+    // here would leave the guard armed to swallow the next real press.
+    const bool was_armed = s_key_guard.armed;
+    if (key_guard_consume(&s_key_guard, ev == BSP_BTN_RELEASE, esp_timer_get_time())) {
+        // The release and the deadline both arrive on this task; log the disarm
+        // transition once it happens.
+        if (was_armed && !s_key_guard.armed) {
+            ESP_LOGI(TAG, "唤醒键已松手,按键恢复响应");
+        }
+        return;
+    }
     if (!s_input_ready || !s_input_queue) return;
     const input_event_t input = { .btn = btn, .event = ev };
     (void)xQueueSend(s_input_queue, &input, 0);

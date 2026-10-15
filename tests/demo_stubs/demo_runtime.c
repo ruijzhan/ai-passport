@@ -31,6 +31,25 @@ void lv_label_set_text(lv_obj_t *object, const char *text) {
     snprintf(test_status, sizeof(test_status), "%s", text);
 }
 void bsp_display_backlight(uint8_t percent) { (void)percent; }
+
+// Baseline-demo UI helpers (main/ui_pixel.c) and the LVGL calls they issue:
+// host tests never render, so these are link-only no-ops returning a shared
+// stub object. Upstream stubs lagged the demo's move onto ui_pixel_*; added
+// here so tests/demo_stubs keeps the demo runtime tests linkable.
+static lv_obj_t s_stub_obj;
+lv_obj_t *ui_pixel_screen_create(const char *title) { (void)title; return &s_stub_obj; }
+lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
+                                uint32_t color) {
+    (void)parent; (void)x; (void)y; (void)w; (void)h; (void)color;
+    return &s_stub_obj;
+}
+lv_obj_t *ui_pixel_label(lv_obj_t *parent, const char *text,
+                         const lv_font_t *font, uint32_t color) {
+    (void)parent; (void)text; (void)font; (void)color; return &s_stub_obj;
+}
+lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y) {
+    (void)parent; (void)x; (void)y; return &s_stub_obj;
+}
 void ui_pixel_mascot_jump(lv_obj_t *mascot) { (void)mascot; }
 void ui_pixel_set_selected(lv_obj_t *panel, bool selected, bool enabled) {
     (void)panel; (void)selected; (void)enabled;
@@ -102,12 +121,34 @@ esp_err_t esp_sleep_disable_wakeup_source(int source) { (void)source; return ESP
 esp_err_t esp_sleep_enable_timer_wakeup(uint64_t us) { (void)us; return ESP_OK; }
 esp_err_t esp_light_sleep_start(void) { return ESP_OK; }
 void esp_deep_sleep_start(void) { assert(!"unexpected deep sleep in host test"); }
-void esp_restart(void) { assert(!"unexpected restart in host test"); }
+unsigned test_restarts;
+void esp_restart(void) {
+    test_restarts++;
+    // A reboot ends this run; park the worker instead of returning into the
+    // deep-sleep routine, matching esp_restart()'s noreturn contract on device.
+    vTaskSuspend(NULL);
+}
 int64_t esp_timer_get_time(void) { return 0; }
 esp_err_t bsp_audio_sleep(void) { return ESP_OK; }
 esp_err_t bsp_audio_wake(void) { return ESP_OK; }
 esp_err_t bsp_audio_prepare_deep_sleep(void) { return ESP_OK; }
 esp_err_t bsp_battery_sleep(void) { return ESP_OK; }
+
+// Key pad: tests set test_btn_mv to the voltage a held key would produce
+// (see the windows in bsp_pins.h), or leave it released.
+int test_btn_mv = 3300;
+// Hand-off failure a test wants bsp_button_prepare_deep_sleep() to report.
+esp_err_t test_prepare_deep_sleep_result = ESP_OK;
+int bsp_button_read_mv(void) { return test_btn_mv; }
+esp_err_t bsp_button_prepare_deep_sleep(int *level) {
+    if (level) *level = 1;
+    return test_prepare_deep_sleep_result;
+}
+esp_err_t esp_deep_sleep_enable_gpio_wakeup(uint64_t gpio_pin_mask,
+                                           esp_deepsleep_gpio_wake_up_mode_t mode) {
+    (void)gpio_pin_mask; (void)mode;
+    return ESP_OK;
+}
 esp_err_t bsp_i2c_prepare_deep_sleep(void) { return ESP_OK; }
 esp_err_t bsp_display_prepare_deep_sleep(void) { return ESP_OK; }
 esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t channels) {
