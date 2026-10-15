@@ -27,6 +27,7 @@
 #include "usage_store.h"
 #include "alert.h"
 #include "alert_beep.h"
+#include "key_guard.h"
 #include "ui_home.h"
 #include "wifi_mgr.h"
 
@@ -60,6 +61,16 @@ static QueueHandle_t s_input_queue;
 static TaskHandle_t s_worker_task;
 static volatile bool s_input_ready;
 static bool s_backlight_full;  // worker's last applied backlight state
+
+// Waking from deep sleep by key reboots the chip while that key is still
+// held: the button component starts a few hundred milliseconds later,
+// registers a press that is already down, and grades it a long press once
+// it has been down for its threshold, so an unintended action fires almost
+// immediately. Drop key actions until that press comes up; the deadline is
+// only a safety net so a stuck key cannot leave the pad dead. The state
+// machine lives in key_guard.h so it can be host-tested without the app.
+#define KEY_GUARD_MAX_US (10LL * 1000 * 1000)
+static key_guard_t s_key_guard;
 
 // Button callbacks run on the shared esp_timer task: enqueue only.
 static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
@@ -213,6 +224,13 @@ void app_main(void)
     if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
         ESP_LOGI(TAG, "wakeup cause: %d", wakeup);
     }
+    // A key wake reboots with that key still held; ignore its actions until
+    // it comes up (see on_key). power_idle.c arms only the GPIO-low button
+    // wakeup, so a GPIO wake here is a button wake.
+    if (wakeup == ESP_SLEEP_WAKEUP_GPIO) {
+        key_guard_arm(&s_key_guard, esp_timer_get_time(), KEY_GUARD_MAX_US);
+        ESP_LOGI(TAG, "key wake: suppressing key actions until release");
+    }
 
     // NVS once, before any subsystem: usage_store reads its cache and
     // wifi_mgr needs the calibration data. Best effort, never erase — a
@@ -246,6 +264,15 @@ void app_main(void)
     }
     if (bsp_button_init(on_key, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "button init failed; idle sleep still applies");
+    } else if (s_key_guard.armed) {
+        // If the wake key was already released before the button driver
+        // started, the component never saw a press and will never emit a
+        // release; sync from the real voltage so the guard disarms now.
+        const bool released = bsp_button_read_mv() >= BSP_BTN_MV_RELEASED_MIN;
+        key_guard_sync_released(&s_key_guard, released);
+        if (!s_key_guard.armed) {
+            ESP_LOGI(TAG, "wake key already released; guard disarmed early");
+        }
     }
     if (xTaskCreate(worker_task, "go_worker", 6144, NULL, 4,
                     &s_worker_task) != pdPASS) {
