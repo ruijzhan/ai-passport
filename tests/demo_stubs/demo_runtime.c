@@ -61,16 +61,6 @@ void ui_pixel_set_selected(lv_obj_t *panel, bool selected, bool enabled) {
 // anything. They must stay unconditional: PE/COFF lld still reports undefined
 // symbols referenced from sections that --gc-sections discarded, so the suites
 // cannot rely on dead-code elimination to drop the enter/exit bodies.
-lv_obj_t *ui_pixel_screen_create(const char *title) { (void)title; return NULL; }
-lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
-                                uint32_t color) {
-    (void)parent; (void)x; (void)y; (void)w; (void)h; (void)color;
-    return NULL;
-}
-lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y) {
-    (void)parent; (void)x; (void)y;
-    return NULL;
-}
 lv_obj_t *lv_obj_create(lv_obj_t *parent) { (void)parent; return NULL; }
 lv_obj_t *lv_label_create(lv_obj_t *parent) { (void)parent; return NULL; }
 uint32_t lv_color_hex(uint32_t color) { return color; }
