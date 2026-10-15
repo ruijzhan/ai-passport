@@ -33,6 +33,10 @@ retain the separate authorization requirements for flashing, Git writes, and pub
   one factory application spanning the rest of the 8 MB Flash. User firmware
   may deliberately change this layout; validate the resulting table and do not
   turn product-specific partitions into mandatory template contracts.
+- Every build must use the root `sdkconfig` so local settings (Wi-Fi
+  credentials, API key, app options) are compiled in; `sdkconfig.defaults`
+  alone is not a valid build configuration. The isolated configuration used by
+  `./tools/validate.sh --firmware` is for validation only.
 - Preserve existing user changes. Start with `git status --short --branch`; never overwrite or clean unrelated files.
 - Flashing new firmware does not require backing up the firmware already on the device; do not make a Flash readback a prerequisite. This does not guarantee preservation of user data or authorize a full-chip erase. Follow the [flashing and data policy](docs/development/engineering/firmware-layout.md#flashing-and-stored-data).
 - Hardware facts follow this priority: product specifications and measured results → `components/bsp/include/bsp_pins.h` → BSP headers and implementation → hardware guide → README/demo code. If a task requires a hardware detail not defined by these sources, ask the user instead of guessing.
