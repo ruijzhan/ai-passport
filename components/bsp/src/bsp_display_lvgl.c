@@ -9,7 +9,7 @@
 
 static const char *TAG = "bsp_lvgl";
 
-#define BSP_LVGL_DRAW_BUFFER_LINES 40
+#define BSP_LVGL_DRAW_BUFFER_LINES 30
 
 static lv_display_t *s_disp;
 static bool s_port_initialized;
@@ -79,15 +79,20 @@ lv_display_t *bsp_lvgl_init(void) {
     const lvgl_port_display_cfg_t dc = {
         .panel_handle = bsp_display_panel(),
         .io_handle    = bsp_display_io(),
-        // ⚠ C3 无 PSRAM,DMA 只能用内部 RAM。40 行单缓冲约 19.2KB，
-        // 可减少窗口命令和队列提交次数；仍保留单缓冲，避免双缓冲挤压音频/Wi-Fi。
+        // ⚠ C3 无 PSRAM,DMA 只能用内部 RAM。30 行单缓冲 = 320*30*2 =
+        // 19,200 B,与竖屏 40 行的占用相同;全宽刷新仍是 8 条(240/30),
+        // 不增加队列提交次数。仍保留单缓冲,避免双缓冲挤压音频/Wi-Fi。
         .buffer_size   = (uint32_t)BSP_LCD_W * BSP_LVGL_DRAW_BUFFER_LINES,
         .double_buffer = false,
         .hres = BSP_LCD_W, .vres = BSP_LCD_H,
         // 旋转/镜像必须在这里配:esp_lvgl_port 注册显示时会重新下发 MADCTL,
-        // 覆盖 bsp_display.c 里 esp_lcd_panel_mirror() 的设置。
-        .rotation = { .swap_xy = false, .mirror_x = false, .mirror_y = false },
+        // 覆盖 bsp_display.c 里的设置。方向值统一来自 bsp_pins.h:
+        // swap_xy + mirror_y = 逆时针 90°,320x240 逻辑帧铺满玻璃。
+        .rotation = { .swap_xy = BSP_LCD_SWAP_XY,
+                      .mirror_x = BSP_LCD_MIRROR_X,
+                      .mirror_y = BSP_LCD_MIRROR_Y },
         // swap_bytes:LVGL 输出小端 RGB565,ST7789 走 SPI 要大端 → 需交换高低字节。
+        // 上个提交竖屏就是这个值,横屏保持不变,否则 Fallout 绿会偏成红/紫。
         .flags = { .buff_dma = true, .swap_bytes = true },
     };
     // The port mutex is recursive. Keep registration and the mask callback in

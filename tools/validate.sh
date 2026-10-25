@@ -44,6 +44,11 @@ run_static_checks() {
         tests/test_ui_pages.c main/ui_pages.c \
         -o "${test_dir}/test_ui_pages"
     "${test_dir}/test_ui_pages"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+        -Itests/bsp_stubs -Icomponents/bsp/include -Imain \
+        tests/test_ui_landscape.c \
+        -o "${test_dir}/test_ui_landscape"
+    "${test_dir}/test_ui_landscape"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_power_charge.c main/power_charge.c \
         -o "${test_dir}/test_power_charge"
@@ -52,7 +57,8 @@ run_static_checks() {
         tests/test_alert.c main/alert.c main/usage_parse.c \
         -o "${test_dir}/test_alert"
     "${test_dir}/test_alert"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
+        -Itests/bsp_stubs -Icomponents/bsp/include -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"
     "${test_dir}/test_bsp_display_rounding"

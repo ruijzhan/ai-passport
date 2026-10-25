@@ -3,15 +3,24 @@
 // 每项都注明"为什么是这个值",便于二次开发时判断能不能改。
 #pragma once
 
+#include <stdbool.h>
+
 #include "driver/spi_master.h"
 #include "driver/i2c_types.h"
 #include "hal/adc_types.h"
 
 // ============================================================================
-// 显示:ST7789P3 240x320,4-line SPI
+// 显示:ST7789P3 240x320 竖屏玻璃,4-line SPI。本分支横屏使用:逻辑分辨率
+// 320x240,靠 MADCTL(MV + MY)把整帧逆时针旋转 90°(见 bsp_display_lvgl.c)。
+// BSP_LCD_W/H 是 LVGL 与刷屏用的逻辑尺寸,不是玻璃丝印尺寸。
 // ============================================================================
-#define BSP_LCD_W            240
-#define BSP_LCD_H            320
+#define BSP_LCD_W            320
+#define BSP_LCD_H            240
+// MADCTL 方向:MV + MY = 整帧逆时针 90°。bsp_display_init()(直连面板)和
+// esp_lvgl_port 注册显示时都必须下发同一组值,两处都从这里取。
+#define BSP_LCD_SWAP_XY      true
+#define BSP_LCD_MIRROR_X     false
+#define BSP_LCD_MIRROR_Y     true
 #define BSP_LCD_SPI_HOST     SPI2_HOST
 #define BSP_LCD_MOSI         9
 #define BSP_LCD_SCLK         8
@@ -24,6 +33,7 @@
 // ST7789 SCK 空闲低、上升沿采样 → SPI mode 0。
 #define BSP_LCD_SPI_MODE     0
 // 本屏出厂即需反色(参考例程 TFT_init() 末尾无条件发 0x21 INVON)。
+// MADCTL 的 MV/MX/MY 只改地址映射,不影响反色语义,故横屏保持竖屏值。
 // 若换屏后画面呈负片,把这里改成 0。
 #define BSP_LCD_INVERT_COLOR 1
 

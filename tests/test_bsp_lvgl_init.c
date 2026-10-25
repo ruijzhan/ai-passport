@@ -33,10 +33,11 @@ void lvgl_port_unlock(void) {
         ++unlocked_flushes;
     }
 }
+static lvgl_port_display_cfg_t last_cfg;
 lv_display_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *cfg) {
     assert(lock_depth > 0 && cfg->panel_handle == &panel_token && !display_live);
     assert(lvgl_port_lock(0)); // Real port takes and releases a recursive lock.
-    if (!fail_display) display_live = 1;
+    if (!fail_display) { display_live = 1; last_cfg = *cfg; }
     lvgl_port_unlock();
     return fail_display ? NULL : &display;
 }
@@ -70,6 +71,16 @@ int main(void) {
     fail_display = 1; expect_failure(); fail_display = 0;
     fail_event = 1; expect_failure(); fail_event = 0;
     assert(bsp_lvgl_init() == &display);
+    // Landscape contract: 320x240 logical frame, panel rotated 90° CCW
+    // (MADCTL MV + MY) so it fills the 240x320 glass.
+    assert(last_cfg.hres == BSP_LCD_W && last_cfg.vres == BSP_LCD_H);
+    assert(BSP_LCD_SWAP_XY && !BSP_LCD_MIRROR_X && BSP_LCD_MIRROR_Y);
+    assert(last_cfg.rotation.swap_xy == BSP_LCD_SWAP_XY);
+    assert(last_cfg.rotation.mirror_x == BSP_LCD_MIRROR_X);
+    assert(last_cfg.rotation.mirror_y == BSP_LCD_MIRROR_Y);
+    // Fallout 色彩契约:上个提交竖屏就是 buff_dma + swap_bytes,横屏必须保持。
+    // swap_bytes 丢了 RGB565 高低字节不交换,绿色会偏成红/紫。
+    assert(last_cfg.flags.buff_dma && last_cfg.flags.swap_bytes);
     assert(init_calls == retained_init_calls); // Display retries reuse the port.
     assert(callback_live && !lock_depth && unlocked_flushes == 1);
     const int before = init_calls;

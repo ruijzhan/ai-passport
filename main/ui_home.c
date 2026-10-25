@@ -1,19 +1,19 @@
 // main/ui_home.c — see ui_home.h. Mark VI Pip-Boy terminal theme on the
-// 240x320 portrait display: phosphor-green ink on a near-black tube,
-// dim/dark hierarchy, and a walking mascot animation in the lower-right
+// 320x240 landscape display: phosphor-green ink on a near-black tube,
+// dim/dark hierarchy, and a walking mascot animation in the right-side
 // viewport.
 //
-//   14:22:05            [bars]
-//   2026-10-06 TUE   [icon] 87%
-//   ------------------------------     green rule
-//   5H ROLLING                  4%
-//   [========== tall bar ==========]  (pace marker, no RESET line)
-//   WEEKLY / MONTHLY (same layout)
-//
-//                              +----+  mascot
-//                              |    |  8 frames
-//   1/3 > SYNC 12S AGO         +----+  combined page + status, bottom-left
-//   [ OK REFRESH   HOLD SLEEP ]      footer
+//   14:22:05                        [bars] [icon] 87%
+//   2026-10-06 TUE
+//   --------------------------------  green rule
+//   5H ROLLING            4%  |+----+  mascot
+//   [==== tall bar ====]      ||    |  8 frames
+//   WEEKLY                12% ||    |
+//   [==== tall bar ====]      |+----+
+//   MONTHLY               87%
+//   [==== tall bar ====]
+//   1/3 > SYNC 12S AGO
+//   [ OK REFRESH   HOLD SLEEP ]       footer
 #include "ui_home.h"
 
 #include <ctype.h>
@@ -30,6 +30,7 @@
 #include "alert.h"
 #include "pipboy_frames.h"
 #include "time_sync.h"
+#include "ui_home_layout.h"
 #include "ui_pages.h"
 #include "usage_store.h"
 #include "wifi_mgr.h"
@@ -47,89 +48,17 @@
 #define PIP_RED   0xFF4D4D
 
 #define WIFI_BARS_COUNT 4
-// Right edge pulled 8px in from 232: the rounded-corner mask
-// (BSP_LVGL_SCREEN_RADIUS=30) clips the top-right bars at x>224.
-#define WIFI_BARS_RIGHT 224
-#define WIFI_BARS_BOTTOM 20
-#define WIFI_BAR_W 6
-#define WIFI_BAR_GAP 3
 // The UI timer ticks at 1 Hz; both sensors are sampled far slower than
 // that because each read is a synchronous bus transaction for a value
 // that changes on a seconds-to-minutes scale.
 #define WIFI_RSSI_SAMPLE_TICKS 10
 #define BATT_SAMPLE_TICKS 30
 
-// Shared geometry for the quota rows and the status line.
-#define CONTENT_X 8
-#define CONTENT_W 224
-// Tall bars fill the space left by removing the per-window RESET lines
-// (reset times live on the DETAIL page): bar bottom (188+16=204) still
-// clears the mascot viewport top (208) by 4px.
-#define BAR_H 16
-// Overview rhythm: three rows from y=56 in 56px steps.
-#define OVERVIEW_Y0 56
-#define OVERVIEW_DY 56
-
-// Green rule separating the status header from the quota rows.
-#define RULE_Y 48
-#define RULE_H 2
-
-// Lower-right mascot viewport: green viewfinder brackets tightly around the
-// 52x75 walk-cycle sprite (4px side padding, ~1-2px top/bottom). The bottom
-// edge stops 4px above the footer and the right edge aligns with the rest
-// of the content (x=232). Top edge at y=208 clears the monthly bar
-// (ends y=204) by 4px.
-#define ANIM_X 172
-#define ANIM_Y 208
-#define ANIM_W 60
-#define ANIM_H 78
-#define ANIM_BRACKET_ARM 10
-#define ANIM_BRACKET_T 2
+// Screen geometry lives in ui_home_layout.h (shared with the host test).
 #define ANIM_FRAME_MS MASCOT_WALK_MS
-
-// Dim footer bar with dark text, like the reference terminal footer.
-#define FOOTER_X 8
-#define FOOTER_Y 290
-#define FOOTER_W 224
-#define FOOTER_H 17
-
-// Page indicator "1/3" at the bottom-left above the footer (y=270):
-// left-aligned like the status line; the mascot viewport (x>=172)
-// never overlaps it and it clears the footer (y=290) by ~6px.
-#define PAGE_X CONTENT_X
-#define PAGE_Y 270
-#define PAGE_W 44
-
-// Status text shares the page-indicator row: starts right after "1/3"
-// with an 8px gap, single line with ellipsis so a long error never
-// wraps into the footer. Right edge (164) clears the mascot viewport
-// (x>=172) by 8px.
-#define STATUS_X (PAGE_X + PAGE_W + 8)
-#define STATUS_Y PAGE_Y
-#define STATUS_W (ANIM_X - STATUS_X - 8)
-
-// Detail rows mirror the overview rhythm (56px each from y=56) so the
-// mascot viewport (top y=208) stays clear: title line plus one status
-// line per window.
-#define DETAIL_SUB_DY 18
-
-// System rows: five status lines from y=56 in 24px steps.
-#define SYS_Y0 56
-#define SYS_DY 24
 #define SYS_COUNT 5
 
-// Battery group is right-aligned at x=232: [icon] 4px "87%".
-// Text width is measured at runtime so 8%..100% all hug the icon.
-#define BATT_GROUP_RIGHT 232
 #define BATT_ICON_TEXT_GAP 4
-#define BATT_FRAME_Y 32
-#define BATT_FRAME_W 25
-#define BATT_FRAME_H 13
-#define BATT_TIP_W 3
-#define BATT_TIP_H 6
-#define BATT_FILL_PAD 2
-#define BATT_FILL_MAX_W (BATT_FRAME_W - 2 * BATT_FILL_PAD)
-#define BATT_FILL_MAX_H (BATT_FRAME_H - 2 * BATT_FILL_PAD)
 #define BATT_LOW_SOC 30
 #define BATT_CRIT_SOC 15
 
@@ -173,17 +102,6 @@ static lv_obj_t *s_marker[USAGE_WINDOW_COUNT];
 // -1 unknown, 0 line sits on the dark track, 1 line covered by the fill.
 // Cached so the per-second refresh only touches the style on a real flip.
 static int s_marker_cover[USAGE_WINDOW_COUNT];
-// Last applied bar value (-1 invalid, INT_MIN never drawn) and marker x
-// (INT_MIN hidden/unknown). lv_bar_set_value/lv_obj_set_pos invalidate the
-// area even when nothing changed, so the 1 Hz refresh skips them unless the
-// value actually moved. Each bar is 224x16px (~7KB SPI); skipping idle ticks
-// saves ~21KB/s of panel traffic plus LVGL redraw CPU.
-static int s_last_bar_pct[USAGE_WINDOW_COUNT];
-static int s_last_marker_x[USAGE_WINDOW_COUNT];
-// Last page whose widget visibility was applied. apply_page_visibility()
-// runs every tick as a self-heal, but the lv_obj flag calls are only needed
-// on a real page switch.
-static int s_applied_page;
 static void bar_alert_color(int i, int percent, bool valid);
 static lv_obj_t *s_detail_title[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_detail_sub[USAGE_WINDOW_COUNT];
@@ -280,26 +198,18 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     if (i < 0 || i >= USAGE_WINDOW_COUNT || !s_marker[i] || !s_bar[i]) {
         return;
     }
-    if (!w->valid || !w->has_reset || !time_ok) {
-        s_marker_cover[i] = -1;
-        if (s_last_marker_x[i] != INT_MIN) {
-            s_last_marker_x[i] = INT_MIN;
-            set_hidden(s_marker[i], true);
-        }
-        return;
-    }
-    int pct = usage_time_progress(now, w->resets_at_utc,
+    int pct = -1;
+    if (w->valid && w->has_reset && time_ok) {
+        pct = usage_time_progress(now, w->resets_at_utc,
                                   usage_window_period_s(i, now));
+    }
     if (pct < 0) {
         s_marker_cover[i] = -1;
-        if (s_last_marker_x[i] != INT_MIN) {
-            s_last_marker_x[i] = INT_MIN;
-            set_hidden(s_marker[i], true);
-        }
+        set_hidden(s_marker[i], true);
         return;
     }
-    const int bar_y = OVERVIEW_Y0 + i * OVERVIEW_DY + 20;
-    int pct_mx = CONTENT_X + (CONTENT_W * pct) / 100 - USAGE_MARKER_W / 2;
+    const int bar_y = OVERVIEW_Y0 + i * OVERVIEW_DY + BAR_TOP_DY;
+    int mx = CONTENT_X + (CONTENT_W * pct) / 100 - USAGE_MARKER_W / 2;
     // No sibling reorder here: the marker is created right after its bar
     // (see ui_home_create), so it already draws above the track and the
     // fill indicator. lv_obj_move_foreground() moves the child in its
@@ -320,17 +230,13 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     // black once the fill covers it), leaving a notch in the outline.
     int mx_min = CONTENT_X + 1;
     int mx_max = CONTENT_X + CONTENT_W - 1 - USAGE_MARKER_W;
-    int mx = pct_mx;
     if (mx < mx_min) {
         mx = mx_min;
     } else if (mx > mx_max) {
         mx = mx_max;
     }
-    if (s_last_marker_x[i] != mx) {
-        s_last_marker_x[i] = mx;
-        set_hidden(s_marker[i], false);
-        lv_obj_set_pos(s_marker[i], mx, bar_y);
-    }
+    set_hidden(s_marker[i], false);
+    lv_obj_set_pos(s_marker[i], mx, bar_y);
 }
 
 // Overview row, called only while the overview page is visible. Shows
@@ -342,56 +248,35 @@ static void window_row(int i, const usage_window_t *w, int64_t now,
     if (i < 0 || i >= USAGE_WINDOW_COUNT) {
         return;
     }
+    char buf[16];
     if (w->valid) {
-        char buf[16];
         snprintf(buf, sizeof(buf), "%d%%", w->percent);
-        set_text(s_pct[i], buf);
-        if (s_last_bar_pct[i] != w->percent) {
-            s_last_bar_pct[i] = w->percent;
-            lv_bar_set_value(s_bar[i], w->percent, LV_ANIM_OFF);
-        }
     } else {
-        set_text(s_pct[i], "--");
-        if (s_last_bar_pct[i] != 0) {
-            s_last_bar_pct[i] = 0;
-            lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
-        }
+        snprintf(buf, sizeof(buf), "--");
     }
+    set_text(s_pct[i], buf);
+    // lv_bar_set_value() returns early when the value is unchanged.
+    lv_bar_set_value(s_bar[i], w->valid ? w->percent : 0, LV_ANIM_OFF);
     // Ignored percent when invalid: bar_alert_color() reads only the flag.
     bar_alert_color(i, w->percent, w->valid);
     marker_update(i, w, now, time_ok);
 }
 
-static int s_bars_last_lit = -1;
-static bool s_bars_last_weak;
-
+// Called only when the sampled signal state changes (see ui_home_refresh).
 static void wifi_bars_set(int lit, bool weak)
 {
-    if (lit == s_bars_last_lit && weak == s_bars_last_weak &&
-        s_bars_last_lit >= 0) {
-        return;
-    }
     lv_color_t active = weak ? lv_color_hex(PIP_AMBER) : lv_color_hex(PIP_GREEN);
     lv_color_t dim = lv_color_hex(PIP_DARK);
     for (int i = 0; i < WIFI_BARS_COUNT; i++) {
         if (!s_wifi_bars[i]) {
             continue;
         }
-        bool was_on = s_bars_last_lit > 0 && i < s_bars_last_lit;
-        bool now_on = lit > 0 && i < lit;
-        if (s_bars_last_lit >= 0 && was_on == now_on &&
-            weak == s_bars_last_weak) {
-            continue;
-        }
-        bool on = now_on;
+        bool on = lit > 0 && i < lit;
         lv_obj_set_style_bg_color(s_wifi_bars[i], on ? active : dim, 0);
     }
-    s_bars_last_lit = lit;
-    s_bars_last_weak = weak;
 }
 
 static uint32_t s_batt_fill_color = UINT32_MAX;
-static int s_batt_fill_w = -1;
 
 static void batt_icon_set(int soc)
 {
@@ -417,10 +302,8 @@ static void batt_icon_set(int soc)
         s_batt_fill_color = fill;
         set_bg_color(s_batt_fill, fill);
     }
-    if (fill_w != s_batt_fill_w) {
-        s_batt_fill_w = fill_w;
-        lv_obj_set_size(s_batt_fill, fill_w, BATT_FILL_MAX_H);
-    }
+    // lv_obj_set_size() returns early when the size is unchanged.
+    lv_obj_set_size(s_batt_fill, fill_w, BATT_FILL_MAX_H);
 }
 
 static void batt_layout(void)
@@ -513,19 +396,14 @@ static void bar_alert_color(int i, int percent, bool valid)
     }
 }
 
-// Toggle all page-owned widgets. Page switches go through
-// ui_home_show_page(); the 1 s refresh re-applies only on a real switch,
-// while a missed switch still self-heals because s_applied_page disagrees
-// with s_page_idx on the next tick.
+// Toggle all page-owned widgets. Runs on every 1 s refresh; the LVGL flag
+// setters are no-ops when the flag already matches, so a missed page switch
+// self-heals on the next tick without extra state.
 static void apply_page_visibility(void)
 {
     if (!s_scr) {
         return;
     }
-    if ((int)s_page_idx == s_applied_page) {
-        return;
-    }
-    s_applied_page = (int)s_page_idx;
     const bool overview = (s_page_idx == UI_PAGE_OVERVIEW);
     const bool detail = (s_page_idx == UI_PAGE_DETAIL);
     const bool sys = (s_page_idx == UI_PAGE_SYS);
@@ -537,13 +415,8 @@ static void apply_page_visibility(void)
     objs_set_hidden(s_sys, SYS_COUNT, !sys);
     // Pace markers are owned by marker_update on the overview page;
     // off-page they stay hidden until the next overview refresh.
-    // Invalidate the cached x so returning to overview re-shows them.
     if (!overview) {
         objs_set_hidden(s_marker, USAGE_WINDOW_COUNT, true);
-        for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
-            s_last_marker_x[i] = INT_MIN;
-            s_marker_cover[i] = -1;
-        }
     }
 }
 
@@ -831,25 +704,6 @@ static lv_obj_t *make_label(lv_obj_t *parent, int x, int y,
     return label;
 }
 
-// Four L-shaped viewfinder brackets around the mascot viewport.
-static void anim_brackets(lv_obj_t *parent)
-{
-    const int x = ANIM_X;
-    const int y = ANIM_Y;
-    const int w = ANIM_W;
-    const int h = ANIM_H;
-    const int a = ANIM_BRACKET_ARM;
-    const int t = ANIM_BRACKET_T;
-    make_rect(parent, x, y, a, t, PIP_GREEN);
-    make_rect(parent, x, y, t, a, PIP_GREEN);
-    make_rect(parent, x + w - a, y, a, t, PIP_GREEN);
-    make_rect(parent, x + w - t, y, t, a, PIP_GREEN);
-    make_rect(parent, x, y + h - t, a, t, PIP_GREEN);
-    make_rect(parent, x, y + h - a, t, a, PIP_GREEN);
-    make_rect(parent, x + w - a, y + h - t, a, t, PIP_GREEN);
-    make_rect(parent, x + w - t, y + h - a, t, a, PIP_GREEN);
-}
-
 void ui_home_create(void)
 {
     s_scr = lv_obj_create(NULL);
@@ -886,16 +740,10 @@ void ui_home_create(void)
     s_last_soc = INT_MIN;
     s_last_lit = INT_MIN;
     s_last_weak = false;
-    s_bars_last_lit = -1;
-    s_bars_last_weak = false;
     s_batt_fill_color = UINT32_MAX;
-    s_batt_fill_w = -1;
     s_status_color = UINT32_MAX;
-    s_applied_page = -1;
     for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
         s_bar_color[i] = UINT32_MAX;
-        s_last_bar_pct[i] = INT_MIN;
-        s_last_marker_x[i] = INT_MIN;
         s_marker_cover[i] = -1;
     }
     s_mascot_period = ANIM_FRAME_MS;
@@ -938,8 +786,9 @@ void ui_home_create(void)
     // end of create() runs batt_layout() before the screen can render,
     // and it owns the group's geometry from then on.
 
-    // Status header ends at the green rule; quota rows follow below.
-    make_rect(s_scr, CONTENT_X, RULE_Y, CONTENT_W, RULE_H, PIP_GREEN);
+    // Status header ends at the green rule; quota rows follow below
+    // (rule spans the content width so it underlines the battery group too).
+    make_rect(s_scr, CONTENT_X, RULE_Y, RULE_W, RULE_H, PIP_GREEN);
 
     int y = OVERVIEW_Y0;
     for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
@@ -953,7 +802,7 @@ void ui_home_create(void)
 
         s_bar[i] = lv_bar_create(s_scr);
         lv_obj_set_size(s_bar[i], CONTENT_W, BAR_H);
-        lv_obj_set_pos(s_bar[i], CONTENT_X, y + 20);
+        lv_obj_set_pos(s_bar[i], CONTENT_X, y + BAR_TOP_DY);
         lv_obj_set_style_radius(s_bar[i], 2, LV_PART_MAIN);
         lv_obj_set_style_border_width(s_bar[i], 1, LV_PART_MAIN);
         lv_obj_set_style_border_color(s_bar[i], lv_color_hex(PIP_GREEN),
@@ -965,7 +814,7 @@ void ui_home_create(void)
         lv_bar_set_range(s_bar[i], 0, 100);
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
 
-        s_marker[i] = make_rect(s_scr, CONTENT_X, y + 20,
+        s_marker[i] = make_rect(s_scr, CONTENT_X, y + BAR_TOP_DY,
                                 USAGE_MARKER_W, BAR_H, PIP_GREEN);
         s_marker_cover[i] = -1;
         set_hidden(s_marker[i], true);
@@ -1001,12 +850,11 @@ void ui_home_create(void)
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(PIP_DIM), 0);
 
-    anim_brackets(s_scr);
     s_sprite = lv_image_create(s_scr);
     lv_image_set_src(s_sprite, PIPBOY_FRAMES[0]);
     lv_obj_set_pos(s_sprite,
                    ANIM_X + (ANIM_W - PIPBOY_FRAME_WIDTH) / 2,
-                   ANIM_Y + (ANIM_H - PIPBOY_FRAME_HEIGHT) / 2);
+                   ANIM_Y + ANIM_H - PIPBOY_FRAME_HEIGHT - ANIM_SPRITE_BOTTOM_PAD);
     lv_obj_set_style_image_recolor(s_sprite, lv_color_hex(PIP_GREEN), 0);
     lv_obj_set_style_image_recolor_opa(s_sprite, LV_OPA_COVER, 0);
     s_anim_frame = 0;

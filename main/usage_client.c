@@ -34,7 +34,7 @@ esp_err_t usage_fetch(usage_info_t *out)
         .url = USAGE_URL,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 12000,
-        .buffer_size = 2048,
+        .buffer_size = RESPONSE_CAP,
         .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
