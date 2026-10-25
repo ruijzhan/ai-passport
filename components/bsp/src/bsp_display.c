@@ -72,7 +72,7 @@ static esp_err_t display_release_deep_sleep_holds(void) {
 //   0x11 SLPOUT / 0x3A COLMOD → esp_lcd_panel_init()
 //   0x21 INVON                → esp_lcd_panel_invert_color()
 //   0x29 DISPON               → esp_lcd_panel_disp_on_off()
-//   0x36 MADCTL               → esp_lcd_panel_mirror()(⚠ 别再手动写 0x36,会被它覆盖)
+//   0x36 MADCTL               → swap_xy()/mirror()(⚠ 别再手动写 0x36,会被覆盖;LVGL 注册时 port 还会按 rotation 重发)
 // ---------------------------------------------------------------------------
 typedef struct {
     uint8_t  cmd;
@@ -193,7 +193,12 @@ esp_err_t bsp_display_init(void) {
 
     e = esp_lcd_panel_invert_color(s_panel, BSP_LCD_INVERT_COLOR);   // 0x21 / 0x20
     if (e != ESP_OK) { ESP_LOGE(TAG, "面板反色设置失败: %s", esp_err_to_name(e)); goto fail; }
-    e = esp_lcd_panel_mirror(s_panel, false, false);                 // 0x36 MADCTL:本板不需镜像(XY 双镜像 = 画面 180°)
+    // 横屏:MADCTL MV + MY = 整帧逆时针旋转 90°,逻辑 320x240 铺满玻璃。
+    // esp_lvgl_port 注册显示时会重发 bsp_pins.h 里的同一组方向值,
+    // 这里先设好,直连面板的用户也能拿到横屏。
+    e = esp_lcd_panel_swap_xy(s_panel, BSP_LCD_SWAP_XY);
+    if (e != ESP_OK) { ESP_LOGE(TAG, "面板 XY 交换设置失败: %s", esp_err_to_name(e)); goto fail; }
+    e = esp_lcd_panel_mirror(s_panel, BSP_LCD_MIRROR_X, BSP_LCD_MIRROR_Y);
     if (e != ESP_OK) { ESP_LOGE(TAG, "面板镜像设置失败: %s", esp_err_to_name(e)); goto fail; }
     e = esp_lcd_panel_set_gap(s_panel, 0, 0);
     if (e != ESP_OK) { ESP_LOGE(TAG, "面板偏移设置失败: %s", esp_err_to_name(e)); goto fail; }
