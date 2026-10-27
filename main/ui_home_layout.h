@@ -25,6 +25,11 @@
 #define BAR_H 16
 // Bar top offset inside its 49px row (title line above).
 #define BAR_TOP_DY 20
+// Horizontal edge for a 0..100 usage or time-progress value: the bar
+// spans CONTENT_W pixels from CONTENT_X, and the returned x is the
+// exclusive right edge of that fraction. The pace marker is centered on
+// it and the overage slice starts there.
+#define USAGE_BAR_X(pct) (CONTENT_X + (CONTENT_W * (pct)) / 100)
 // Overview rhythm: three rows from y=56 in 49px steps (bars end at 190,
 // page row at 192 stays clear).
 #define OVERVIEW_Y0 56

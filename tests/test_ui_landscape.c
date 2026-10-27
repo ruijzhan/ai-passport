@@ -53,6 +53,15 @@ int main(void)
     assert(RULE_Y >= 44);
     assert(CONTENT_X + RULE_W <= BSP_LCD_W - CONTENT_X);
 
+    // Pace marker and overage slice use the bar's full 0..100 pixel span.
+    assert(USAGE_BAR_X(0) == CONTENT_X);
+    assert(USAGE_BAR_X(100) == CONTENT_X + CONTENT_W);
+    assert(USAGE_BAR_X(50) == CONTENT_X + CONTENT_W / 2);
+    for (int pct = 1; pct <= 100; pct++) {
+        assert(USAGE_BAR_X(pct) >= USAGE_BAR_X(pct - 1));
+        assert(USAGE_BAR_X(pct) <= CONTENT_X + CONTENT_W);
+    }
+
     puts("UI landscape layout tests: PASS");
     return 0;
 }
