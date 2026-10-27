@@ -98,10 +98,8 @@ static lv_obj_t *s_batt_tip;
 static lv_obj_t *s_title[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_pct[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_bar[USAGE_WINDOW_COUNT];
+static lv_obj_t *s_overage[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_marker[USAGE_WINDOW_COUNT];
-// -1 unknown, 0 line sits on the dark track, 1 line covered by the fill.
-// Cached so the per-second refresh only touches the style on a real flip.
-static int s_marker_cover[USAGE_WINDOW_COUNT];
 static void bar_alert_color(int i, int percent, bool valid);
 static lv_obj_t *s_detail_title[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_detail_sub[USAGE_WINDOW_COUNT];
@@ -133,9 +131,8 @@ static int s_mv = -1;
 
 // Pace marker: 2px line spanning the bar height, centered on the
 // time-progress position so usage-vs-average is directly comparable. It
-// flips color to stay readable in the Pip-Boy palette: bright phosphor
-// green while it sits on the dark track, black once the usage fill covers
-// it (black-on-dark would vanish, green-on-green would too).
+// uses the same amber as the error status line. Usage beyond the line is
+// over pace, so that part of the fill is painted in the same amber.
 #define USAGE_MARKER_W 2
 
 static void set_text(lv_obj_t *label, const char *text)
@@ -195,7 +192,8 @@ static lv_obj_t *make_rect(lv_obj_t *parent, int x, int y, int w, int h,
 static void marker_update(int i, const usage_window_t *w, int64_t now,
                           bool time_ok)
 {
-    if (i < 0 || i >= USAGE_WINDOW_COUNT || !s_marker[i] || !s_bar[i]) {
+    if (i < 0 || i >= USAGE_WINDOW_COUNT || !s_marker[i] || !s_bar[i] ||
+        !s_overage[i]) {
         return;
     }
     int pct = -1;
@@ -204,30 +202,23 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
                                   usage_window_period_s(i, now));
     }
     if (pct < 0) {
-        s_marker_cover[i] = -1;
         set_hidden(s_marker[i], true);
+        set_hidden(s_overage[i], true);
         return;
     }
     const int bar_y = OVERVIEW_Y0 + i * OVERVIEW_DY + BAR_TOP_DY;
-    int mx = CONTENT_X + (CONTENT_W * pct) / 100 - USAGE_MARKER_W / 2;
-    // No sibling reorder here: the marker is created right after its bar
-    // (see ui_home_create), so it already draws above the track and the
-    // fill indicator. lv_obj_move_foreground() moves the child in its
-    // parent and calls lv_obj_invalidate(parent) — parent is the screen,
-    // so doing it on every 1 s refresh forced a full-screen repaint that
-    // hitched the mascot animation once per second.
-    // Flip the line color so it stays readable: green on the dark track,
-    // black where the bright fill has already passed it.
-    int covered = (w->percent >= pct) ? 1 : 0;
-    if (s_marker_cover[i] != covered) {
-        s_marker_cover[i] = covered;
-        set_bg_color(s_marker[i], covered ? 0x000000 : PIP_GREEN);
-    }
+    int mx = USAGE_BAR_X(pct) - USAGE_MARKER_W / 2;
+    // No sibling reorder here: the marker is created after its bar and
+    // overage overlay (see ui_home_create), so it already draws above
+    // both. lv_obj_move_foreground() moves the child in its parent and
+    // calls lv_obj_invalidate(parent) — parent is the screen, so doing it
+    // on every 1 s refresh forced a full-screen repaint that hitched the
+    // mascot animation once per second.
     // Center the 2px line on the time-progress position, then keep it
     // inside the bar's 1px border. At pct 0 the unclamped x is bar_x - 1
     // and at pct 100 it lands on the right border, so an end position
-    // would paint over and blank the vertical border line (the marker is
-    // black once the fill covers it), leaving a notch in the outline.
+    // would paint over the vertical border line, leaving a notch in the
+    // outline.
     int mx_min = CONTENT_X + 1;
     int mx_max = CONTENT_X + CONTENT_W - 1 - USAGE_MARKER_W;
     if (mx < mx_min) {
@@ -237,6 +228,19 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     }
     set_hidden(s_marker[i], false);
     lv_obj_set_pos(s_marker[i], mx, bar_y);
+
+    // Usage ahead of the time-progress line: paint the overrun slice of
+    // the bar amber, matching the marker and the fetch-error status line.
+    // The on-pace part keeps its alert color underneath.
+    if (w->percent > pct) {
+        const int x0 = USAGE_BAR_X(pct);
+        const int x1 = USAGE_BAR_X(w->percent);
+        lv_obj_set_pos(s_overage[i], x0, bar_y);
+        lv_obj_set_size(s_overage[i], x1 - x0, BAR_H);
+        set_hidden(s_overage[i], false);
+    } else {
+        set_hidden(s_overage[i], true);
+    }
 }
 
 // Overview row, called only while the overview page is visible. Shows
@@ -413,10 +417,12 @@ static void apply_page_visibility(void)
     objs_set_hidden(s_detail_title, USAGE_WINDOW_COUNT, !detail);
     objs_set_hidden(s_detail_sub, USAGE_WINDOW_COUNT, !detail);
     objs_set_hidden(s_sys, SYS_COUNT, !sys);
-    // Pace markers are owned by marker_update on the overview page;
-    // off-page they stay hidden until the next overview refresh.
+    // Pace markers and overage slices are owned by marker_update on the
+    // overview page; off-page they stay hidden until the next overview
+    // refresh.
     if (!overview) {
         objs_set_hidden(s_marker, USAGE_WINDOW_COUNT, true);
+        objs_set_hidden(s_overage, USAGE_WINDOW_COUNT, true);
     }
 }
 
@@ -744,7 +750,6 @@ void ui_home_create(void)
     s_status_color = UINT32_MAX;
     for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
         s_bar_color[i] = UINT32_MAX;
-        s_marker_cover[i] = -1;
     }
     s_mascot_period = ANIM_FRAME_MS;
     s_mascot_tint = (int)PIP_GREEN;
@@ -814,9 +819,15 @@ void ui_home_create(void)
         lv_bar_set_range(s_bar[i], 0, 100);
         lv_bar_set_value(s_bar[i], 0, LV_ANIM_OFF);
 
+        // Overage slice drawn above the bar's own fill: usage past the
+        // time-progress line is amber, like the marker and error status.
+        s_overage[i] = make_rect(s_scr, CONTENT_X, y + BAR_TOP_DY,
+                                 CONTENT_W, BAR_H, PIP_AMBER);
+        lv_obj_set_style_radius(s_overage[i], 2, 0);
+        set_hidden(s_overage[i], true);
+
         s_marker[i] = make_rect(s_scr, CONTENT_X, y + BAR_TOP_DY,
-                                USAGE_MARKER_W, BAR_H, PIP_GREEN);
-        s_marker_cover[i] = -1;
+                                USAGE_MARKER_W, BAR_H, PIP_AMBER);
         set_hidden(s_marker[i], true);
 
         y += OVERVIEW_DY;
@@ -890,7 +901,7 @@ void ui_home_destroy(void)
         s_sprite = NULL;
         for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
             s_title[i] = NULL;
-            s_pct[i] = s_bar[i] = s_marker[i] = NULL;
+            s_pct[i] = s_bar[i] = s_overage[i] = s_marker[i] = NULL;
             s_detail_title[i] = s_detail_sub[i] = NULL;
         }
         for (int i = 0; i < SYS_COUNT; i++) {
