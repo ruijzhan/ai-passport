@@ -2,6 +2,7 @@
 #include <stddef.h>
 
 #include "bsp_display_rounding.h"
+#include "bsp_pins.h"
 
 static void assert_span_matches_pixels(int width, int height, int radius)
 {
@@ -24,6 +25,9 @@ int main(void)
     const int height = 320;
     const int radius = 30;
 
+    // Keep the rounding test pinned to the BSP's logical frame: a change
+    // in BSP_LCD_W/H must re-run the pixel-for-pixel mask comparison.
+    assert_span_matches_pixels(BSP_LCD_W, BSP_LCD_H, radius);
     assert(bsp_display_pixel_outside_rounded_rect(0, 0, width, height, radius));
     assert(bsp_display_pixel_outside_rounded_rect(29, 0, width, height, radius));
     assert(!bsp_display_pixel_outside_rounded_rect(30, 0, width, height, radius));

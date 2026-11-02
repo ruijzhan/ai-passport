@@ -6,10 +6,9 @@
 #pragma once
 
 #include "lvgl.h"
+#include "ui_home_layout.h"  // PIPBOY_FRAME_WIDTH/HEIGHT
 
 #define PIPBOY_FRAME_COUNT 8
-#define PIPBOY_FRAME_WIDTH 52
-#define PIPBOY_FRAME_HEIGHT 75
 
 LV_IMAGE_DECLARE(pipboy_frame_0);
 LV_IMAGE_DECLARE(pipboy_frame_1);

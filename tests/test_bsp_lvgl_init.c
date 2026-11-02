@@ -8,6 +8,7 @@ static lv_display_t display;
 static int panel_present = 1, lock_depth, port_live, display_live, callback_live;
 static int fail_lock, fail_port, fail_display, fail_event, init_calls, unlocked_flushes;
 static int panel_token, io_token;
+static lvgl_port_display_cfg_t last_cfg;
 esp_lcd_panel_handle_t bsp_display_panel(void) { return panel_present ? &panel_token : NULL; }
 esp_lcd_panel_io_handle_t bsp_display_io(void) { return &io_token; }
 esp_err_t lvgl_port_init(const lvgl_port_cfg_t *cfg) {
@@ -36,7 +37,7 @@ void lvgl_port_unlock(void) {
 lv_display_t *lvgl_port_add_disp(const lvgl_port_display_cfg_t *cfg) {
     assert(lock_depth > 0 && cfg->panel_handle == &panel_token && !display_live);
     assert(lvgl_port_lock(0)); // Real port takes and releases a recursive lock.
-    if (!fail_display) display_live = 1;
+    if (!fail_display) { display_live = 1; last_cfg = *cfg; }
     lvgl_port_unlock();
     return fail_display ? NULL : &display;
 }
@@ -70,6 +71,13 @@ int main(void) {
     fail_display = 1; expect_failure(); fail_display = 0;
     fail_event = 1; expect_failure(); fail_event = 0;
     assert(bsp_lvgl_init() == &display);
+    // Portrait contract: logical frame matches the panel and no MADCTL
+    // rotation/mirroring is applied. Fallout color contract: buff_dma +
+    // swap_bytes must stay, or RGB565 green shifts to red/purple.
+    assert(last_cfg.hres == BSP_LCD_W && last_cfg.vres == BSP_LCD_H);
+    assert(!last_cfg.rotation.swap_xy && !last_cfg.rotation.mirror_x &&
+           !last_cfg.rotation.mirror_y);
+    assert(last_cfg.flags.buff_dma && last_cfg.flags.swap_bytes);
     assert(init_calls == retained_init_calls); // Display retries reuse the port.
     assert(callback_live && !lock_depth && unlocked_flushes == 1);
     const int before = init_calls;
