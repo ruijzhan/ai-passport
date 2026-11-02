@@ -207,6 +207,9 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
         return;
     }
     const int bar_y = OVERVIEW_Y0 + i * OVERVIEW_DY + BAR_TOP_DY;
+    // Marker sits inside the bar's 1px border so the green outline stays
+    // intact: 1px shorter on top and bottom, amber only in the interior.
+    const int inner_y = bar_y + 1;
     int mx = USAGE_BAR_X(pct) - USAGE_MARKER_W / 2;
     // No sibling reorder here: the marker is created after its bar and
     // overage overlay (see ui_home_create), so it already draws above
@@ -227,17 +230,28 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
         mx = mx_max;
     }
     set_hidden(s_marker[i], false);
-    lv_obj_set_pos(s_marker[i], mx, bar_y);
+    lv_obj_set_pos(s_marker[i], mx, inner_y);
 
     // Usage ahead of the time-progress line: paint the overrun slice of
     // the bar amber, matching the marker and the fetch-error status line.
-    // The on-pace part keeps its alert color underneath.
+    // The on-pace part keeps its alert color underneath. Inset by the
+    // 1px border on all sides so the green outline never changes color.
     if (w->percent > pct) {
-        const int x0 = USAGE_BAR_X(pct);
-        const int x1 = USAGE_BAR_X(w->percent);
-        lv_obj_set_pos(s_overage[i], x0, bar_y);
-        lv_obj_set_size(s_overage[i], x1 - x0, BAR_H);
-        set_hidden(s_overage[i], false);
+        int x0 = USAGE_BAR_X(pct);
+        int x1 = USAGE_BAR_X(w->percent);
+        if (x0 < CONTENT_X + 1) {
+            x0 = CONTENT_X + 1;
+        }
+        if (x1 > CONTENT_X + CONTENT_W - 1) {
+            x1 = CONTENT_X + CONTENT_W - 1;
+        }
+        if (x1 > x0) {
+            lv_obj_set_pos(s_overage[i], x0, inner_y);
+            lv_obj_set_size(s_overage[i], x1 - x0, BAR_H - 2);
+            set_hidden(s_overage[i], false);
+        } else {
+            set_hidden(s_overage[i], true);
+        }
     } else {
         set_hidden(s_overage[i], true);
     }
@@ -821,13 +835,16 @@ void ui_home_create(void)
 
         // Overage slice drawn above the bar's own fill: usage past the
         // time-progress line is amber, like the marker and error status.
-        s_overage[i] = make_rect(s_scr, CONTENT_X, y + BAR_TOP_DY,
-                                 CONTENT_W, BAR_H, PIP_AMBER);
+        // Inset by the 1px bar border so the green outline stays intact.
+        s_overage[i] = make_rect(s_scr, CONTENT_X + 1, y + BAR_TOP_DY + 1,
+                                 CONTENT_W - 2, BAR_H - 2, PIP_AMBER);
         lv_obj_set_style_radius(s_overage[i], 2, 0);
         set_hidden(s_overage[i], true);
 
-        s_marker[i] = make_rect(s_scr, CONTENT_X, y + BAR_TOP_DY,
-                                USAGE_MARKER_W, BAR_H, PIP_AMBER);
+        // Pace marker inset by the same 1px border: the amber line lives
+        // in the bar interior and never paints over the outline.
+        s_marker[i] = make_rect(s_scr, CONTENT_X + 1, y + BAR_TOP_DY + 1,
+                                USAGE_MARKER_W, BAR_H - 2, PIP_AMBER);
         set_hidden(s_marker[i], true);
 
         y += OVERVIEW_DY;
