@@ -53,12 +53,12 @@ usage_window_t *usage_window_at(usage_info_t *info, int i)
     }
 }
 
-int64_t usage_window_period_s(int i, int64_t now_utc)
+int64_t usage_window_period_to_reset(int i, int64_t reset_utc)
 {
     switch (i) {
     case 0: return USAGE_ROLLING_PERIOD_S;
     case 1: return USAGE_WEEKLY_PERIOD_S;
-    case 2: return usage_month_period_s(now_utc);
+    case 2: return usage_month_period_to_reset(reset_utc);
     default: return -1;
     }
 }
@@ -200,22 +200,29 @@ void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
     }
 }
 
-int usage_days_in_month(int64_t epoch_utc)
+int64_t usage_month_period_to_reset(int64_t reset_utc)
 {
-    if (epoch_utc < 0) return -1;
-    time_t t = (time_t)epoch_utc;
-    struct tm tm = { 0 };
-    if (!gmtime_r(&t, &tm)) return -1;
-    unsigned limit = month_days(tm.tm_year + 1900, (unsigned)tm.tm_mon + 1);
-    if (limit == 0) return -1;
-    return (int)limit;
-}
+    if (reset_utc < 0) return -1;
+    time_t t = (time_t)reset_utc;
+    struct tm tm_rst = { 0 };
+    if (!gmtime_r(&t, &tm_rst)) return -1;
 
-int64_t usage_month_period_s(int64_t now_utc)
-{
-    int dim = usage_days_in_month(now_utc);
-    if (dim <= 0) return -1;
-    return (int64_t)dim * 86400;
+    int prev_y = tm_rst.tm_year + 1900;
+    unsigned prev_mo = (unsigned)tm_rst.tm_mon;  // 0-based -> previous month
+    if (prev_mo == 0U) {
+        prev_mo = 12U;
+        prev_y--;
+    }
+    const unsigned dim = month_days(prev_y, prev_mo);
+    if (dim == 0U) return -1;
+    unsigned day = (unsigned)tm_rst.tm_mday;
+    if (day > dim) day = dim;
+    const int64_t prev_epoch =
+        days_from_civil(prev_y, prev_mo, day) * 86400 +
+        (int64_t)tm_rst.tm_hour * 3600 + (int64_t)tm_rst.tm_min * 60 +
+        tm_rst.tm_sec;
+    const int64_t period = reset_utc - prev_epoch;
+    return period > 0 ? period : -1;
 }
 
 int usage_time_progress(int64_t now_utc, int64_t reset_utc, int64_t period_s)
@@ -229,4 +236,19 @@ int usage_time_progress(int64_t now_utc, int64_t reset_utc, int64_t period_s)
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     return (int)pct;
+}
+
+int usage_projected_percent(int used_percent, int64_t now_utc,
+                            int64_t reset_utc, int64_t period_s)
+{
+    if (used_percent < 0 || now_utc < 0 || reset_utc < 0 || period_s <= 0) {
+        return -1;
+    }
+    const int64_t remaining = reset_utc - now_utc;
+    if (remaining <= 0 || remaining >= period_s) return -1;
+    const int64_t elapsed = period_s - remaining;
+    int64_t projected =
+        ((int64_t)used_percent * period_s + elapsed / 2) / elapsed;
+    if (projected > USAGE_PROJECT_CAP) projected = USAGE_PROJECT_CAP;
+    return (int)projected;
 }

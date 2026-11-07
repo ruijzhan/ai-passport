@@ -35,9 +35,11 @@ extern const usage_window_desc_t USAGE_WINDOWS[USAGE_WINDOW_COUNT];
 // Window i of info (rolling, weekly, monthly); NULL on a bad index.
 usage_window_t *usage_window_at(usage_info_t *info, int i);
 
-// Cycle length of window i at now_utc (monthly follows the calendar
-// month). -1 on a bad index or negative time.
-int64_t usage_window_period_s(int i, int64_t now_utc);
+// Cycle length of window i ending at reset_utc. Monthly is the actual
+// calendar-month span before the reset (same day-of-month, clamped to the
+// previous month's last day), which matches subscription-anchored resets.
+// -1 on a bad index or negative reset.
+int64_t usage_window_period_to_reset(int i, int64_t reset_utc);
 
 // Parse the body of GET /zen/go/v1/usage. Never fails hard: missing or
 // malformed fields leave the corresponding window invalid.
@@ -56,16 +58,26 @@ void usage_format_countdown(int64_t now_utc, int64_t reset_utc,
 #define USAGE_ROLLING_PERIOD_S (5 * 3600)
 #define USAGE_WEEKLY_PERIOD_S (7 * 86400)
 
-// Days in the calendar month containing epoch_utc (UTC): 28..31.
-// Returns -1 when epoch_utc is negative.
-int usage_days_in_month(int64_t epoch_utc);
+// Projection display cap: a value above this saturates so the readout
+// stays three digits.
+#define USAGE_PROJECT_CAP 999
 
-// Monthly cycle length: days in the month containing now_utc, in seconds.
-// Returns -1 when now_utc is negative.
-int64_t usage_month_period_s(int64_t now_utc);
+// Monthly cycle length ending at reset_utc: the same day-of-month one
+// calendar month earlier (clamped to the previous month's last day) up to
+// reset_utc. Returns -1 when reset_utc is negative.
+int64_t usage_month_period_to_reset(int64_t reset_utc);
 
 // Time progress 0..100: elapsed / period, where
 // elapsed = period - (reset_utc - now_utc). 100 means the cycle has fully
 // elapsed, 0 means it just started. Returns -1 when the reset is unknown
 // (reset_utc < 0) or the period is invalid (period_s <= 0).
 int usage_time_progress(int64_t now_utc, int64_t reset_utc, int64_t period_s);
+
+// Project used percent onto the full cycle at the cycle-to-date average
+// rate: used * period_s / elapsed, using the same elapsed definition as
+// usage_time_progress(). Returns -1 when there is no basis (unknown or
+// passed reset, invalid period, or no elapsed time). Values above 100 mean
+// the current pace exhausts the quota before the reset; the result is
+// capped at USAGE_PROJECT_CAP for display.
+int usage_projected_percent(int used_percent, int64_t now_utc,
+                            int64_t reset_utc, int64_t period_s);

@@ -42,6 +42,10 @@ int main(void)
         assert(sprite_y + PIPBOY_FRAME_HEIGHT + ANIM_SPRITE_BOTTOM_PAD ==
                ANIM_Y + ANIM_H);
         assert(sprite_y > centered_y);
+
+        // Projection value sits in the empty viewport above the sprite.
+        assert(PROJ_VALUE_Y >= RULE_Y + RULE_H);
+        assert(PROJ_VALUE_Y + PROJ_H <= sprite_y);
     }
 
     // Bottom rows: page indicator, status line, and footer all fit.

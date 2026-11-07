@@ -52,6 +52,15 @@
 #define ANIM_H 148
 #define ANIM_SPRITE_BOTTOM_PAD 4
 
+// Month-end projection value in the blank viewport above the mascot's
+// head. The sprite is bottom-aligned, so the value is centered in the
+// empty band and clears the sprite by a wide margin. PROJ_H covers the
+// 28 px digit line for the host layout check.
+#define PROJ_VALUE_Y (ANIM_Y + 24)
+#define PROJ_H 32
+// Gap between the projection digits and the trailing "%" sign.
+#define PROJ_NUM_PCT_GAP 2
+
 // Mascot sprite dimensions (the frame data lives in pipboy_frames.h).
 #define PIPBOY_FRAME_WIDTH 52
 #define PIPBOY_FRAME_HEIGHT 75
