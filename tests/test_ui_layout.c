@@ -27,6 +27,16 @@ int main(void)
     assert(ANIM_X + ANIM_W <= BSP_LCD_W - CONTENT_X);
     assert(ANIM_Y + ANIM_H <= FOOTER_Y - 4);
 
+    // Month-end projection reads out in the empty band below the monthly
+    // bar, clears the page/status row, and stays left of the mascot.
+    {
+        const int monthly_bar_bottom =
+            OVERVIEW_Y0 + (USAGE_WINDOW_COUNT - 1) * OVERVIEW_DY +
+            BAR_TOP_DY + BAR_H;
+        assert(PROJ_LABEL_Y >= monthly_bar_bottom + 4);
+        assert(PROJ_VALUE_Y + PROJ_H <= PAGE_Y - 4);
+    }
+
     // Mascot sprite: horizontally centered and vertically centered in the
     // viewport, inside the brackets.
     {

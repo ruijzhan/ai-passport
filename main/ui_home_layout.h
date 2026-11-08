@@ -50,6 +50,19 @@
 #define ANIM_BRACKET_ARM 10
 #define ANIM_BRACKET_T 2
 
+// Month-end projection readout in the empty band below the monthly bar
+// and left of the mascot viewport. The 14px "MONTH-END" caption is
+// centered over the 28px value; PROJ_H is that value's line height and
+// PROJ_W keeps the block clear of the mascot by 8px.
+#define PROJ_X CONTENT_X
+#define PROJ_W (ANIM_X - PROJ_X - 8)
+#define PROJ_LABEL_Y (ANIM_Y + 6)
+#define PROJ_LABEL_H 16
+#define PROJ_VALUE_Y (PROJ_LABEL_Y + PROJ_LABEL_H)
+#define PROJ_H 30
+// Gap between the projection digits and the trailing "%" sign.
+#define PROJ_NUM_PCT_GAP 2
+
 // Mascot sprite dimensions (the frame data lives in pipboy_frames.h).
 #define PIPBOY_FRAME_WIDTH 52
 #define PIPBOY_FRAME_HEIGHT 75

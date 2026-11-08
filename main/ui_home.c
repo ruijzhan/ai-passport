@@ -10,8 +10,8 @@
 //   [======= amber =======|========]  (amber = past pace marker)
 //   WEEKLY / MONTHLY (same layout)
 //
-//                              +----+  mascot
-//                              |    |  8 frames
+//   MONTH-END
+//          75%                 +----+  mascot
 //   1/3 > SYNC 12S AGO         +----+  combined page + status, bottom-left
 //   [ OK REFRESH   HOLD SLEEP ]      footer
 #include "ui_home.h"
@@ -104,6 +104,8 @@ static lv_obj_t *s_detail_title[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_detail_sub[USAGE_WINDOW_COUNT];
 static lv_obj_t *s_sys[SYS_COUNT];
 static lv_obj_t *s_status;
+static lv_obj_t *s_proj_num;
+static lv_obj_t *s_proj_pct_sym;
 static lv_obj_t *s_sprite;
 static lv_timer_t *s_timer;
 static lv_timer_t *s_anim_timer;
@@ -117,6 +119,10 @@ static int s_last_lit = INT_MIN;
 static bool s_last_weak;
 // UINT32_MAX forces the first status write, including its color.
 static uint32_t s_status_color = UINT32_MAX;
+// Projection value/color caches; a new projection is usually identical
+// from one 1 s refresh to the next, and restyling invalidates its area.
+static int s_proj_pct = INT_MIN;
+static uint32_t s_proj_color = UINT32_MAX;
 // Per-bar indicator color cache; same sentinel forces the first paint.
 static uint32_t s_bar_color[USAGE_WINDOW_COUNT];
 // Mascot motion cache so the 1 s refresh only touches the timer style
@@ -198,7 +204,8 @@ static void marker_update(int i, const usage_window_t *w, int64_t now,
     int pct = -1;
     if (w->valid && w->has_reset && time_ok) {
         pct = usage_time_progress(now, w->resets_at_utc,
-                                  usage_window_period_s(i, now));
+                                  usage_window_period_to_reset(
+                                      i, w->resets_at_utc));
     }
     if (pct < 0) {
         set_hidden(s_marker[i], true);
@@ -548,6 +555,71 @@ static void sys_refresh(wifi_mgr_state_t ws, const usage_snapshot_t *snap,
     set_text(s_sys[4], buf);
 }
 
+// Month-end projection under the quota rows. The API exposes quota
+// percentages, not raw token counts, so the cycle-to-date average daily
+// rate is (monthly percent / elapsed days); projecting it to the reset is
+// used * period / elapsed. A value above 100 means the current pace runs
+// out before the reset. The digits use 28 px type for glanceability while
+// the "%" sign stays at 14 px so it reads as a unit marker, not a digit.
+// Both labels are recentered as one group after every value change.
+static void proj_layout(bool pct_visible)
+{
+    if (!s_proj_num || !s_proj_pct_sym) return;
+    // One call resolves the screen's pending label sizes, both included.
+    lv_obj_update_layout(s_proj_num);
+    const lv_coord_t num_w = lv_obj_get_width(s_proj_num);
+    lv_coord_t total = num_w;
+    if (pct_visible) {
+        total += PROJ_NUM_PCT_GAP + lv_obj_get_width(s_proj_pct_sym);
+    }
+    const int x0 = PROJ_X + (PROJ_W - (int)total) / 2;
+    lv_obj_set_pos(s_proj_num, x0, PROJ_VALUE_Y);
+    if (pct_visible) {
+        // Baseline-align the small "%" to the digits: both fonts expose
+        // line_height/base_line, so the tops differ by the ascent gap.
+        int pct_y = PROJ_VALUE_Y +
+            (lv_font_montserrat_28.line_height -
+             lv_font_montserrat_28.base_line) -
+            (lv_font_montserrat_14.line_height -
+             lv_font_montserrat_14.base_line);
+        lv_obj_set_pos(s_proj_pct_sym, x0 + (int)num_w + PROJ_NUM_PCT_GAP,
+                       pct_y);
+    }
+}
+
+static void projection_refresh(const usage_window_t *monthly, int64_t now,
+                               bool time_ok)
+{
+    int projected = -1;
+    if (monthly && monthly->valid && monthly->has_reset && time_ok) {
+        projected = usage_projected_percent(
+            monthly->percent, now, monthly->resets_at_utc,
+            usage_month_period_to_reset(monthly->resets_at_utc));
+    }
+    if (projected == s_proj_pct) {
+        return;
+    }
+    s_proj_pct = projected;
+    const bool known = projected >= 0;
+    const uint32_t color = known
+        ? ALERT_COLOR[alert_level_for_percent(projected)] : PIP_DIM;
+    if (known) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d", projected);
+        set_text(s_proj_num, buf);
+    } else {
+        set_text(s_proj_num, "--");
+    }
+    // The "%" text is set once at creation; only its visibility changes.
+    set_hidden(s_proj_pct_sym, !known);
+    if (s_proj_color != color) {
+        s_proj_color = color;
+        set_text_color(s_proj_num, color);
+        set_text_color(s_proj_pct_sym, color);
+    }
+    proj_layout(known);
+}
+
 static void ui_home_refresh(void)
 {
     if (!s_scr) return;
@@ -661,6 +733,9 @@ static void ui_home_refresh(void)
     } else {
         sys_refresh(ws, &snap, now, time_ok);
     }
+    // The projection is shared chrome (like the mascot), so it stays
+    // visible on every page.
+    projection_refresh(&snap.info.monthly, now_utc, time_ok);
 
     // Idle status text stays dim; an alert or a failed fetch raises it.
     uint32_t status_color = PIP_DIM;
@@ -780,6 +855,8 @@ void ui_home_create(void)
     s_last_weak = false;
     s_batt_fill_color = UINT32_MAX;
     s_status_color = UINT32_MAX;
+    s_proj_pct = INT_MIN;
+    s_proj_color = UINT32_MAX;
     for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
         s_bar_color[i] = UINT32_MAX;
     }
@@ -889,6 +966,23 @@ void ui_home_create(void)
         set_hidden(s_sys[i], true);
     }
 
+    // Month-end projection in the empty band left of the mascot. The
+    // 28 px digits are the only larger type below the quota rows, so they
+    // read at a glance; the caption and "%" marker stay at 14 px. The
+    // labels are positioned by proj_layout() during the first refresh.
+    lv_obj_t *caption = make_label(s_scr, PROJ_X, PROJ_LABEL_Y,
+                                   &lv_font_montserrat_14, PIP_DIM);
+    lv_obj_set_width(caption, PROJ_W);
+    lv_obj_set_style_text_align(caption, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(caption, "MONTH-END");
+    s_proj_num = make_label(s_scr, PROJ_X, PROJ_VALUE_Y,
+                            &lv_font_montserrat_28, PIP_DIM);
+    lv_label_set_text(s_proj_num, "--");
+    s_proj_pct_sym = make_label(s_scr, PROJ_X, PROJ_VALUE_Y,
+                                &lv_font_montserrat_14, PIP_DIM);
+    lv_label_set_text(s_proj_pct_sym, "%");
+    set_hidden(s_proj_pct_sym, true);
+
     s_status = lv_label_create(s_scr);
     lv_obj_set_pos(s_status, STATUS_X, STATUS_Y);
     lv_obj_set_width(s_status, STATUS_W);
@@ -934,6 +1028,7 @@ void ui_home_destroy(void)
         s_scr = NULL;
         s_clock = s_date = s_page = s_hint = s_batt = s_status = NULL;
         s_batt_frame = s_batt_fill = s_batt_tip = NULL;
+        s_proj_num = s_proj_pct_sym = NULL;
         s_sprite = NULL;
         for (int i = 0; i < USAGE_WINDOW_COUNT; i++) {
             s_title[i] = NULL;
